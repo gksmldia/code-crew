@@ -1,7 +1,10 @@
 use std::env;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::parent_id;
-use std::process::{Command, ExitCode};
+#[cfg(unix)]
+use std::process::Command;
+use std::process::ExitCode;
 
 const SERVER: &str = "http://127.0.0.1:19876";
 const SAFE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "WebSearch", "TodoWrite"];
@@ -10,6 +13,7 @@ const SAFE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "WebSearch", "TodoWr
 /// hook's PPID = the Claude Code node process). Returns up to `max_depth` PIDs
 /// in order from `start_pid` outward. Uses `ps` so we don't pull in libc /
 /// sysctl bindings.
+#[cfg(unix)]
 fn pid_chain(start_pid: u32, max_depth: usize) -> Vec<u32> {
     let mut chain = vec![start_pid];
     let mut cur = start_pid;
@@ -38,6 +42,7 @@ fn pid_chain(start_pid: u32, max_depth: usize) -> Vec<u32> {
 /// by `ps`. Helper executables ("Code Helper", "Cursor Helper" …) are
 /// deliberately excluded — they appear earlier in the PPID chain but don't
 /// own user-visible windows, so `frontmost = true` against them is a no-op.
+#[cfg(unix)]
 const GUI_HOSTS: &[&str] = &[
     "iterm2", "iterm",
     "terminal",
@@ -56,6 +61,7 @@ const GUI_HOSTS: &[&str] = &[
 ];
 
 /// Look up `comm` (executable basename) for a PID via `ps`.
+#[cfg(unix)]
 fn comm_of(pid: u32) -> Option<String> {
     let out = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "comm="])
@@ -81,6 +87,7 @@ fn comm_of(pid: u32) -> Option<String> {
 /// ("Code Helper" contains "code") but don't own windows, so picking one
 /// makes `frontmost = true` silently no-op. Falls back to the outermost
 /// non-helper ancestor.
+#[cfg(unix)]
 fn pick_source_pid(chain: &[u32]) -> Option<u32> {
     let comms: Vec<(u32, String)> = chain
         .iter()
@@ -99,6 +106,7 @@ fn pick_source_pid(chain: &[u32]) -> Option<u32> {
     comms.last().map(|(p, _)| *p).or_else(|| chain.last().copied())
 }
 
+#[cfg(unix)]
 fn enrich_with_pid_info(buf: &str) -> String {
     let ppid = parent_id();
     let chain = pid_chain(ppid, 8);
@@ -114,6 +122,14 @@ fn enrich_with_pid_info(buf: &str) -> String {
         );
     }
     v.to_string()
+}
+
+// Windows: no `ps`, no `/proc`, no Unix-style PPID API in stable std. The
+// pet-window-focus feature is macOS/Linux-only for now; the hook still
+// forwards events without source_pid enrichment.
+#[cfg(not(unix))]
+fn enrich_with_pid_info(buf: &str) -> String {
+    buf.to_string()
 }
 
 /// Wrapped JSON the hook returns when nothing answered in time. Matches the
@@ -146,6 +162,7 @@ fn default_permission_deny() -> String {
 /// termios so the parent's terminal state stays intact whichever thread wins
 /// the race. Incoming ESC sequences (arrows, mouse reports) are drained
 /// silently so their tail bytes don't get treated as a key on the next read.
+#[cfg(unix)]
 fn cli_prompt_and_read(payload: &str) -> Option<String> {
     use std::io::Read;
 
@@ -266,6 +283,13 @@ fn cli_prompt_and_read(payload: &str) -> Option<String> {
         }),
     };
     Some(json.to_string())
+}
+
+// Windows has no /dev/tty equivalent we can use the same way; skip the
+// CLI prompt race entirely — the widget answers alone on Windows.
+#[cfg(not(unix))]
+fn cli_prompt_and_read(_payload: &str) -> Option<String> {
+    None
 }
 
 fn main() -> ExitCode {
