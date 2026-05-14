@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Override the user's global gitignore — CI needs the lock file for `npm ci`
+!package-lock.json
+
 # CI rebuilds the hook binary per-platform; don't commit the local one
 src-tauri/binaries/
 
