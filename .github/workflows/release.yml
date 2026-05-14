@@ -30,16 +30,22 @@ jobs:
         run: echo "skip"
       - name: Install npm deps
         run: npm ci
+      - name: Stub hook binary path (satisfies tauri-build resource check)
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          ext=""
+          [[ "${{ matrix.platform }}" == "windows-latest" ]] && ext=".exe"
+          touch src-tauri/binaries/code-crew-hook${ext}
       - name: Build hook binary
         working-directory: ./src-tauri
         run: cargo build --bin code-crew-hook --release
       - name: Copy hook into binaries/
         shell: bash
         run: |
-          mkdir -p src-tauri/binaries
           ext=""
           [[ "${{ matrix.platform }}" == "windows-latest" ]] && ext=".exe"
-          cp src-tauri/target/release/code-crew-hook${ext} src-tauri/binaries/
+          cp src-tauri/target/release/code-crew-hook${ext} src-tauri/binaries/code-crew-hook${ext}
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
