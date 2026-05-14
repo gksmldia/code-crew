@@ -37,15 +37,24 @@ jobs:
           ext=""
           [[ "${{ matrix.platform }}" == "windows-latest" ]] && ext=".exe"
           touch src-tauri/binaries/code-crew-hook${ext}
-      - name: Build hook binary
+      - name: Build hook binary (macOS — universal)
+        if: matrix.platform == 'macos-latest'
         working-directory: ./src-tauri
-        run: cargo build --bin code-crew-hook --release
-      - name: Copy hook into binaries/
+        run: |
+          cargo build --bin code-crew-hook --release --target aarch64-apple-darwin
+          cargo build --bin code-crew-hook --release --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/code-crew-hook \
+            target/aarch64-apple-darwin/release/code-crew-hook \
+            target/x86_64-apple-darwin/release/code-crew-hook
+          cp target/universal-apple-darwin/release/code-crew-hook binaries/code-crew-hook
+      - name: Build hook binary (Windows)
+        if: matrix.platform == 'windows-latest'
+        working-directory: ./src-tauri
         shell: bash
         run: |
-          ext=""
-          [[ "${{ matrix.platform }}" == "windows-latest" ]] && ext=".exe"
-          cp src-tauri/target/release/code-crew-hook${ext} src-tauri/binaries/code-crew-hook${ext}
+          cargo build --bin code-crew-hook --release
+          cp target/release/code-crew-hook.exe binaries/code-crew-hook.exe
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
