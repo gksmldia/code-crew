@@ -10,6 +10,7 @@
     ]
   },
   "bundle": {
+    "targets": ["nsis"],
     "resources": {
       "binaries/code-crew-hook.exe": "code-crew-hook.exe"
     },
