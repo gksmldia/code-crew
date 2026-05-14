@@ -29,15 +29,14 @@ jobs:
         if: matrix.platform == 'ubuntu-latest'
         run: echo "skip"
       - name: Install npm deps
-        working-directory: ./code-crew
         run: npm ci
       - name: Build hook binary
-        working-directory: ./code-crew/src-tauri
+        working-directory: ./src-tauri
         run: cargo build --bin code-crew-hook --release
       - name: Copy hook into binaries/
-        working-directory: ./code-crew
         shell: bash
         run: |
+          mkdir -p src-tauri/binaries
           ext=""
           [[ "${{ matrix.platform }}" == "windows-latest" ]] && ext=".exe"
           cp src-tauri/target/release/code-crew-hook${ext} src-tauri/binaries/
@@ -45,7 +44,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: ./code-crew
           tagName: ${{ github.ref_name }}
           releaseName: "code-crew ${{ github.ref_name }}"
           releaseDraft: true
