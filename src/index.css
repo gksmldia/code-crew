@@ -1,0 +1,23 @@
+@import "./pet-animations.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+}
+
+::-webkit-scrollbar { width: 6px; height: 16px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.95); background-clip: padding-box; }
+
+.scrollbar-chunky::-webkit-scrollbar { width: 14px; height: 14px; }

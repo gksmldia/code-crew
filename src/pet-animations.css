@@ -1,0 +1,77 @@
+@keyframes pet-sleeping {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
+}
+
+@keyframes pet-typing {
+  0%, 100% { transform: rotate(-8deg); }
+  50%      { transform: rotate( 8deg); }
+}
+
+@keyframes pet-surprised-bounce {
+  0%   { transform: translateY(0); }
+  60%  { transform: translateY(-8px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes pet-surprised-shiver {
+  0%, 100% { transform: translateX(-1px); }
+  50%      { transform: translateX(1px); }
+}
+
+@keyframes pet-disappointed {
+  0%, 100% { transform: rotate(-3deg); }
+  50%      { transform: rotate(3deg); }
+}
+
+@keyframes pet-relieved-hop {
+  0%   { transform: translateY(0); }
+  50%  { transform: translateY(-6px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes pet-relieved-breathe {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
+}
+
+.pet-anim-sleeping {
+  animation: pet-sleeping 2.5s ease-in-out infinite;
+  will-change: transform;
+}
+
+.pet-anim-typing {
+  animation: pet-typing 0.6s ease-in-out infinite;
+  transform-origin: 50% 100%;
+  will-change: transform;
+}
+
+.pet-anim-surprised {
+  animation:
+    pet-surprised-bounce 0.4s ease-out 1,
+    pet-surprised-shiver 0.15s linear infinite 0.4s;
+  will-change: transform;
+}
+
+.pet-anim-disappointed {
+  animation: pet-disappointed 1.8s ease-in-out infinite;
+  transform-origin: 50% 100%;
+  will-change: transform;
+}
+
+.pet-anim-relieved {
+  animation:
+    pet-relieved-hop 0.6s ease-out 3,
+    pet-relieved-breathe 2.5s ease-in-out infinite 1.8s;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-anim-sleeping,
+  .pet-anim-typing,
+  .pet-anim-surprised,
+  .pet-anim-disappointed,
+  .pet-anim-relieved {
+    animation: none !important;
+  }
+}

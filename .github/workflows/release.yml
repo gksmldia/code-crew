@@ -1,0 +1,53 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Install dependencies (Linux only — n/a here)
+        if: matrix.platform == 'ubuntu-latest'
+        run: echo "skip"
+      - name: Install npm deps
+        working-directory: ./code-crew
+        run: npm ci
+      - name: Build hook binary
+        working-directory: ./code-crew/src-tauri
+        run: cargo build --bin code-crew-hook --release
+      - name: Copy hook into binaries/
+        working-directory: ./code-crew
+        shell: bash
+        run: |
+          ext=""
+          [[ "${{ matrix.platform }}" == "windows-latest" ]] && ext=".exe"
+          cp src-tauri/target/release/code-crew-hook${ext} src-tauri/binaries/
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: ./code-crew
+          tagName: ${{ github.ref_name }}
+          releaseName: "code-crew ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
