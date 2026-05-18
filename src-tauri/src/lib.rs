@@ -16,6 +16,22 @@ const HOOK_BINARY_NAME: &str = "code-crew-hook.exe";
 #[cfg(not(target_os = "windows"))]
 const HOOK_BINARY_NAME: &str = "code-crew-hook";
 
+fn normalize_hook_path(s: String) -> String {
+    // Tauri returns Windows resource paths in verbatim form (`\\?\C:\…`).
+    // Claude Code runs hook commands through bash, which can't resolve the
+    // verbatim prefix and consumes backslashes inside double-quoted strings
+    // as escapes. Forward slashes under Git Bash avoid both problems.
+    #[cfg(target_os = "windows")]
+    {
+        let stripped = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        stripped.replace('\\', "/")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        s
+    }
+}
+
 pub struct AppCtx {
     pub state: AppState,
     pub permission_decisions: Arc<Mutex<HashMap<String, PermissionDecision>>>,
@@ -27,7 +43,7 @@ async fn install_hooks(app: tauri::AppHandle) -> Result<(), String> {
         .path()
         .resolve(HOOK_BINARY_NAME, tauri::path::BaseDirectory::Resource)
         .map_err(|e| e.to_string())?;
-    let path_str = exe.to_string_lossy().to_string();
+    let path_str = normalize_hook_path(exe.to_string_lossy().into_owned());
     hook_install::install(&path_str).map_err(|e| e.to_string())
 }
 
@@ -177,7 +193,14 @@ pub fn run() {
     };
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::SIZE,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
@@ -215,7 +238,7 @@ pub fn run() {
                 .path()
                 .resolve(HOOK_BINARY_NAME, tauri::path::BaseDirectory::Resource)
             {
-                let path_str = exe.to_string_lossy().to_string();
+                let path_str = normalize_hook_path(exe.to_string_lossy().into_owned());
                 if let Err(e) = hook_install::install(&path_str) {
                     tracing::warn!("hook auto-install failed: {}", e);
                 }
