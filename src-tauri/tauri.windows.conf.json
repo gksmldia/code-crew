@@ -10,7 +10,7 @@
         "x": 0,
         "y": 600,
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": false,
         "resizable": true,

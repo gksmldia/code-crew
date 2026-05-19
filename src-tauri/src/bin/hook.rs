@@ -2,7 +2,7 @@ use std::env;
 use std::io::{self, Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::parent_id;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::process::Command;
 use std::process::ExitCode;
 
@@ -124,10 +124,58 @@ fn enrich_with_pid_info(buf: &str) -> String {
     v.to_string()
 }
 
-// Windows: no `ps`, no `/proc`, no Unix-style PPID API in stable std. The
-// pet-window-focus feature is macOS/Linux-only for now; the hook still
-// forwards events without source_pid enrichment.
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let script = format!(
+        "(Get-CimInstance Win32_Process -Filter \"ProcessId={}\").ParentProcessId",
+        pid
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|p| *p > 0 && *p != pid)
+}
+
+#[cfg(windows)]
+fn pid_chain(start_pid: u32, max_depth: usize) -> Vec<u32> {
+    let mut chain = vec![start_pid];
+    let mut cur = start_pid;
+    for _ in 0..max_depth {
+        let Some(ppid) = parent_pid(cur) else { break };
+        chain.push(ppid);
+        cur = ppid;
+    }
+    chain
+}
+
+#[cfg(windows)]
+fn enrich_with_pid_info(buf: &str) -> String {
+    let current = std::process::id();
+    let start = parent_pid(current).unwrap_or(current);
+    let chain = pid_chain(start, 8);
+    let source = chain.first().copied().unwrap_or(start);
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(buf) else {
+        return buf.to_string();
+    };
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("source_pid".into(), serde_json::json!(source));
+        obj.insert(
+            "pid_chain".into(),
+            serde_json::Value::Array(chain.iter().map(|p| serde_json::json!(p)).collect()),
+        );
+    }
+    v.to_string()
+}
+
+#[cfg(not(any(unix, windows)))]
 fn enrich_with_pid_info(buf: &str) -> String {
     buf.to_string()
 }

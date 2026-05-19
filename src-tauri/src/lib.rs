@@ -178,6 +178,41 @@ fn focus_app(app_name: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn is_process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    process_alive(pid)
+}
+
+#[cfg(target_os = "windows")]
+fn process_alive(pid: u32) -> bool {
+    let Ok(out) = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+        .output()
+    else {
+        return true;
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|line| line.split_whitespace().any(|token| token == pid.to_string()))
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true)
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn process_alive(_pid: u32) -> bool {
+    true
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -214,6 +249,7 @@ pub fn run() {
             derive_display_name,
             focus_pid,
             focus_app,
+            is_process_alive,
         ])
         // Intercept window close so the app survives any code path that
         // calls `getCurrentWindow().close()` (header × button, devtools,
