@@ -110,15 +110,19 @@ export function PetCard({ session }: PetCardProps) {
   const onDoubleClickCard = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest("button")) return;
-    if (session.agentType === "codex") {
-      void invoke("focus_app", { appName: "Codex" });
-      return;
-    }
     const chain = session.pidChain && session.pidChain.length > 0
       ? session.pidChain
       : session.sourcePid != null ? [session.sourcePid] : [];
-    if (chain.length === 0) return;
-    void invoke("focus_pid", { pidChain: chain });
+    const focusCodexApp = () => {
+      void invoke("focus_app", { appName: "Codex" }).catch(() => undefined);
+    };
+    if (chain.length > 0) {
+      void invoke("focus_pid", { pidChain: chain }).catch(() => {
+        if (session.agentType === "codex") focusCodexApp();
+      });
+      return;
+    }
+    if (session.agentType === "codex") focusCodexApp();
   };
 
   return (

@@ -200,6 +200,7 @@ fn map_codex_line(
                 transcript_path: routed_transcript.clone(),
                 agent_name: None,
                 source_pid: None,
+                pid_chain: None,
             }),
             "task_complete" => {
                 if parent_for_path.is_some() {
@@ -271,6 +272,7 @@ fn map_codex_line(
                     transcript_path: routed_transcript,
                     agent_name: None,
                     source_pid: None,
+                    pid_chain: None,
                 })
             }
             "function_call_output" => {

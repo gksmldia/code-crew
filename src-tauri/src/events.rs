@@ -37,6 +37,8 @@ pub enum Event {
         agent_name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid_chain: Option<Vec<u32>>,
     },
     PostToolUse {
         session_id: String,
@@ -138,6 +140,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
             source_pid: raw.source_pid,
+            pid_chain: raw.pid_chain.clone(),
         },
         "PostToolUse" => Event::PostToolUse {
             session_id: sid,

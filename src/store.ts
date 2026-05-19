@@ -148,6 +148,7 @@ export const useStore = create<Store>((set) => ({
           sess.state = "working";
           sess.currentTool = ev.tool_name;
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
 
           const tp = ev.transcript_path ?? undefined;
           if (isCodexTranscriptPath(tp)) markCodex(sess);

@@ -137,13 +137,23 @@ end tell"#,
             .args(["-e", &script])
             .output()
             .map_err(|e| e.to_string())?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         focus_log(&format!(
             "  → status={} stdout={:?} stderr={:?}",
-            out.status,
-            String::from_utf8_lossy(&out.stdout).trim(),
-            String::from_utf8_lossy(&out.stderr).trim(),
+            out.status, stdout, stderr,
         ));
-        return Ok(());
+        if !out.status.success() {
+            return Err(if stderr.is_empty() {
+                format!("osascript failed: {}", out.status)
+            } else {
+                stderr
+            });
+        }
+        if stdout == "no-match" {
+            return Err("no matching process in pid chain".into());
+        }
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
