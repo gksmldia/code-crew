@@ -3,9 +3,19 @@
   "app": {
     "windows": [
       {
+        "title": "code-crew",
         "label": "main",
+        "width": 500,
+        "height": 320,
+        "x": 0,
+        "y": 600,
+        "decorations": false,
         "transparent": false,
-        "decorations": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "resizable": true,
+        "shadow": true,
+        "dragDropEnabled": false,
         "visible": false
       }
     ]
@@ -17,7 +27,8 @@
     },
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "./windows/hooks.nsh"
       }
     }
   }
