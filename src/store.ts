@@ -120,12 +120,13 @@ export const useStore = create<Store>((set) => ({
       const order = [...state.sessionOrder];
       switch (ev.kind) {
         case "SessionStart": {
+          const existed = Boolean(s[ev.session_id]);
           const sess = ensureSession(s, order, ev.session_id, {
             agentType: ev.agent_type,
             cwd: ev.cwd,
             displayName: lastSegment(ev.cwd),
           });
-          sess.state = "idle";
+          if (!existed) sess.state = "idle";
           sess.lastSeen = Date.now();
           if (ev.source_pid != null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;

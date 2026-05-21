@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 import { useStore } from "./store";
 import { PetCard } from "./components/PetCard";
 import { useIdleSweep } from "./hooks/useIdleSweep";
@@ -22,6 +24,15 @@ interface ProjectFile {
     timestamp: number;
   }>;
 }
+
+type PendingUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
+type UpdateState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "available"; version: string }
+  | { kind: "installing" }
+  | { kind: "current" }
+  | { kind: "error" };
 
 async function deriveProjectKey(cwd: string): Promise<string> {
   try {
@@ -46,7 +57,52 @@ function App() {
   const applyEvent = useStore((s) => s.applyEvent);
   const addRestored = useStore((s) => s.addRestoredMessages);
   const restoredRef = useRef<Set<string>>(new Set());
+  const pendingUpdateRef = useRef<PendingUpdate | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const [updateState, setUpdateState] = useState<UpdateState>({ kind: "idle" });
+
+  const checkForUpdates = async (manual = false) => {
+    if (updateState.kind === "checking" || updateState.kind === "installing") return;
+    if (manual) setUpdateState({ kind: "checking" });
+    try {
+      const update = await check();
+      pendingUpdateRef.current = update;
+      if (update) {
+        setUpdateState({ kind: "available", version: update.version });
+      } else if (manual) {
+        setUpdateState({ kind: "current" });
+        window.setTimeout(() => {
+          setUpdateState((state) => state.kind === "current" ? { kind: "idle" } : state);
+        }, 2500);
+      }
+    } catch {
+      pendingUpdateRef.current = null;
+      if (manual) {
+        setUpdateState({ kind: "error" });
+        window.setTimeout(() => {
+          setUpdateState((state) => state.kind === "error" ? { kind: "idle" } : state);
+        }, 3000);
+      }
+    }
+  };
+
+  const installUpdate = async () => {
+    const update = pendingUpdateRef.current;
+    if (!update || updateState.kind === "installing") return;
+    setUpdateState({ kind: "installing" });
+    try {
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch {
+      setUpdateState({ kind: "available", version: update.version });
+    }
+  };
+
+  useEffect(() => {
+    void checkForUpdates(false);
+    // Run once at startup; user-triggered checks use the header control.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -133,6 +189,32 @@ function App() {
         <span className="font-semibold">code-crew</span>
         <span className="opacity-60">{list.length} sessions</span>
         <span className="flex-1" />
+        {updateState.kind === "available" ? (
+          <button
+            onClick={installUpdate}
+            className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30"
+            title={`Install ${updateState.version}`}
+          >
+            update {updateState.version}
+          </button>
+        ) : (
+          <button
+            onClick={() => void checkForUpdates(true)}
+            disabled={updateState.kind === "checking" || updateState.kind === "installing"}
+            className="px-2 py-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-50"
+            title="Check for updates"
+          >
+            {updateState.kind === "checking"
+              ? "checking"
+              : updateState.kind === "installing"
+                ? "installing"
+                : updateState.kind === "current"
+                  ? "current"
+                  : updateState.kind === "error"
+                    ? "failed"
+                    : "update"}
+          </button>
+        )}
         <button
           onClick={() => getCurrentWindow().hide()}
           className="px-2 py-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10"

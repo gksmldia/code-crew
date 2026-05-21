@@ -31,8 +31,8 @@ describe("petForSession", () => {
 });
 
 describe("breed catalog", () => {
-  it("has exactly 10 breeds", () => {
-    expect(BREEDS.length).toBe(10);
+  it("has exactly 20 breeds", () => {
+    expect(BREEDS.length).toBe(20);
   });
 
   it("breed ids are unique", () => {
