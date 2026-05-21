@@ -1,6 +1,22 @@
 use std::path::Path;
 use std::process::Command;
 
+fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(cwd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
 pub fn derive(cwd: &Path) -> String {
     if let Some(remote) = git_remote(cwd) {
         return remote;
@@ -21,29 +37,11 @@ pub fn display_name(cwd: &Path) -> String {
 }
 
 fn git_remote(cwd: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .args(["config", "--get", "remote.origin.url"])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    run_git(cwd, &["config", "--get", "remote.origin.url"])
 }
 
 fn git_root(cwd: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    run_git(cwd, &["rev-parse", "--show-toplevel"])
 }
 
 pub fn hash_short(key: &str) -> String {

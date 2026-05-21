@@ -2,7 +2,7 @@ use std::env;
 use std::io::{self, Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::parent_id;
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 use std::process::Command;
 use std::process::ExitCode;
 
@@ -125,43 +125,32 @@ fn enrich_with_pid_info(buf: &str) -> String {
 }
 
 #[cfg(windows)]
-fn parent_pid(pid: u32) -> Option<u32> {
-    let script = format!(
-        "(Get-CimInstance Win32_Process -Filter \"ProcessId={}\").ParentProcessId",
-        pid
-    );
-    let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse::<u32>()
-        .ok()
-        .filter(|p| *p > 0 && *p != pid)
-}
+fn enrich_with_pid_info(buf: &str) -> String {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
-#[cfg(windows)]
-fn pid_chain(start_pid: u32, max_depth: usize) -> Vec<u32> {
-    let mut chain = vec![start_pid];
-    let mut cur = start_pid;
-    for _ in 0..max_depth {
-        let Some(ppid) = parent_pid(cur) else { break };
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    let parent_of = |pid: u32| -> Option<u32> {
+        let proc = sys.process(Pid::from_u32(pid))?;
+        let ppid = proc.parent()?.as_u32();
+        if ppid == 0 || ppid == pid { None } else { Some(ppid) }
+    };
+
+    let current = std::process::id();
+    let start = parent_of(current).unwrap_or(current);
+    let mut chain = vec![start];
+    let mut cur = start;
+    for _ in 0..8 {
+        let Some(ppid) = parent_of(cur) else { break };
         chain.push(ppid);
         cur = ppid;
     }
-    chain
-}
-
-#[cfg(windows)]
-fn enrich_with_pid_info(buf: &str) -> String {
-    let current = std::process::id();
-    let start = parent_pid(current).unwrap_or(current);
-    let chain = pid_chain(start, 8);
     let source = chain.first().copied().unwrap_or(start);
+
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(buf) else {
         return buf.to_string();
     };

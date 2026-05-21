@@ -124,7 +124,7 @@ function App() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-white/75 dark:bg-gray-900/75 backdrop-blur">
+    <div className="h-full flex flex-col bg-white/65 dark:bg-gray-900/65 backdrop-blur">
       <header
         className="h-10 px-3 flex items-center gap-2 text-xs border-b border-black/10 dark:border-white/10 select-none"
         onMouseDown={startDrag}

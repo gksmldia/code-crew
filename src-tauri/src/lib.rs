@@ -198,15 +198,15 @@ fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(target_os = "windows")]
 fn process_alive(pid: u32) -> bool {
-    let Ok(out) = std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-        .output()
-    else {
-        return true;
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .any(|line| line.split_whitespace().any(|token| token == pid.to_string()))
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let target = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[target]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    sys.process(target).is_some()
 }
 
 #[cfg(unix)]
