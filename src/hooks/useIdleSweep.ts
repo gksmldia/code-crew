@@ -2,8 +2,8 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 
-const SWEEP_MS = 30 * 1000;
-const DEAD_PROCESS_GRACE_MS = 10 * 1000;
+const SWEEP_MS = 5 * 1000;
+const DEAD_PROCESS_GRACE_MS = 3 * 1000;
 const STALE_REMOVE_MS = 30 * 60 * 1000;
 
 export function useIdleSweep() {

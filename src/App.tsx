@@ -60,22 +60,6 @@ function App() {
   const pendingUpdateRef = useRef<PendingUpdate | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [updateState, setUpdateState] = useState<UpdateState>({ kind: "idle" });
-  const [hooksReport, setHooksReport] = useState<string | null>(null);
-  const [hooksStatus, setHooksStatus] = useState<"idle" | "running" | "ok" | "fail">("idle");
-
-  const reinstallHooks = async () => {
-    if (hooksStatus === "running") return;
-    setHooksStatus("running");
-    try {
-      const report = await invoke<string>("install_hooks");
-      setHooksReport(report);
-      setHooksStatus("ok");
-    } catch (e) {
-      setHooksReport(typeof e === "string" ? e : String(e));
-      setHooksStatus("fail");
-    }
-  };
-
   const checkForUpdates = async (manual = false) => {
     if (updateState.kind === "checking" || updateState.kind === "installing") return;
     if (manual) setUpdateState({ kind: "checking" });
@@ -231,20 +215,6 @@ function App() {
           </button>
         )}
         <button
-          onClick={() => void reinstallHooks()}
-          className={`px-2 py-0.5 rounded ${
-            hooksStatus === "fail"
-              ? "bg-red-500/30 hover:bg-red-500/40"
-              : hooksStatus === "ok"
-                ? "bg-emerald-500/20 hover:bg-emerald-500/30"
-                : "hover:bg-black/10 dark:hover:bg-white/10"
-          } disabled:opacity-50`}
-          disabled={hooksStatus === "running"}
-          title="Reinstall Claude Code hooks and view diagnostic report"
-        >
-          {hooksStatus === "running" ? "hooks…" : "hooks"}
-        </button>
-        <button
           onClick={() => getCurrentWindow().hide()}
           className="px-2 py-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10"
           title="Hide"
@@ -259,31 +229,6 @@ function App() {
           ×
         </button>
       </header>
-      {hooksReport !== null && (
-        <div className="absolute inset-x-2 top-12 z-10 max-h-[80%] overflow-auto rounded border border-black/20 dark:border-white/20 bg-white dark:bg-gray-900 shadow-lg p-3 text-xs">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="font-semibold">hook install report</span>
-            <span className="flex-1" />
-            <button
-              onClick={() => {
-                if (hooksReport) void navigator.clipboard.writeText(hooksReport);
-              }}
-              className="px-2 py-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10"
-              title="Copy report"
-            >
-              copy
-            </button>
-            <button
-              onClick={() => setHooksReport(null)}
-              className="px-2 py-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10"
-              title="Close"
-            >
-              ×
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap font-mono">{hooksReport}</pre>
-        </div>
-      )}
       <div ref={scrollerRef} className="flex-1 overflow-x-auto overflow-y-hidden flex gap-3 p-3" onMouseDown={startDrag}>
         {list.length === 0 ? (
           <div className="flex items-center justify-center flex-1 text-sm opacity-50">
