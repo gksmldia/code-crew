@@ -132,6 +132,45 @@ fn enrich_with_pid_info(buf: &str) -> String {
 }
 
 #[cfg(windows)]
+const GUI_HOSTS_WIN: &[&str] = &[
+    "code", "cursor", "windsurf", "vscodium", "code - insiders",
+];
+#[cfg(windows)]
+const SHELLS_WIN: &[&str] = &["bash", "sh", "cmd", "conhost", "powershell", "pwsh"];
+
+/// Walk the PID chain and return the best "source" PID — preferring a known
+/// GUI host (Code.exe, Cursor.exe …) so the idle sweep tracks a persistent
+/// process rather than the ephemeral bash.exe/cmd.exe that spawned the hook.
+#[cfg(windows)]
+fn pick_source_pid_windows(chain: &[u32], sys: &sysinfo::System) -> Option<u32> {
+    use sysinfo::Pid;
+    let exe_stem = |pid: u32| -> Option<String> {
+        sys.process(Pid::from_u32(pid))
+            .and_then(|p| p.exe())
+            .and_then(|e| e.file_stem())
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase())
+    };
+    // Prefer a known GUI host (outermost wins — gives us Code.exe over node.exe).
+    for &pid in chain.iter().rev() {
+        if let Some(name) = exe_stem(pid) {
+            if GUI_HOSTS_WIN.iter().any(|h| name.starts_with(h)) {
+                return Some(pid);
+            }
+        }
+    }
+    // Fall back to the outermost non-shell process.
+    for &pid in chain.iter().rev() {
+        if let Some(name) = exe_stem(pid) {
+            if !SHELLS_WIN.iter().any(|s| name.starts_with(s)) {
+                return Some(pid);
+            }
+        }
+    }
+    chain.last().copied()
+}
+
+#[cfg(windows)]
 fn enrich_with_pid_info(buf: &str) -> String {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -149,14 +188,35 @@ fn enrich_with_pid_info(buf: &str) -> String {
 
     let current = std::process::id();
     let start = parent_of(current).unwrap_or(current);
-    let mut chain = vec![start];
+    let mut raw_chain = vec![start];
     let mut cur = start;
     for _ in 0..8 {
         let Some(ppid) = parent_of(cur) else { break };
-        chain.push(ppid);
+        raw_chain.push(ppid);
         cur = ppid;
     }
-    let source = chain.first().copied().unwrap_or(start);
+
+    // Strip transient shell wrappers (bash.exe, cmd.exe, conhost.exe …) from the
+    // front of the chain. The idle sweep probes pidChain[0] to decide if the
+    // session is still alive — if that entry is a shell that exits right after
+    // the hook call, the session gets removed 3 s later and reappears on the
+    // next hook, causing the "session flicker" bug on Windows.
+    let is_shell = |pid: u32| -> bool {
+        sys.process(Pid::from_u32(pid))
+            .and_then(|p| p.exe())
+            .and_then(|e| e.file_stem())
+            .and_then(|s| s.to_str())
+            .map(|s| {
+                let lower = s.to_lowercase();
+                SHELLS_WIN.iter().any(|sh| lower.starts_with(sh))
+            })
+            .unwrap_or(false)
+    };
+    // Drop leading shell entries; keep at least one element.
+    let first_non_shell = raw_chain.iter().position(|&p| !is_shell(p)).unwrap_or(0);
+    let chain: Vec<u32> = raw_chain[first_non_shell..].to_vec();
+
+    let source = pick_source_pid_windows(&chain, &sys).unwrap_or_else(|| chain.first().copied().unwrap_or(start));
 
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(buf) else {
         return buf.to_string();
