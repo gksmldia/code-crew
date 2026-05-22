@@ -65,13 +65,3 @@
     pet-relieved-breathe 2.5s ease-in-out infinite 1.8s;
   will-change: transform;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .pet-anim-sleeping,
-  .pet-anim-typing,
-  .pet-anim-surprised,
-  .pet-anim-disappointed,
-  .pet-anim-relieved {
-    animation: none !important;
-  }
-}
