@@ -30,6 +30,11 @@ pub fn data_dir() -> PathBuf {
     home.join(".code-crew").join("projects")
 }
 
+pub fn port_file_path() -> PathBuf {
+    let home = dirs::home_dir().expect("home dir not found");
+    home.join(".code-crew").join("server.port")
+}
+
 pub fn ensure_data_dir() -> std::io::Result<PathBuf> {
     let dir = data_dir();
     ensure_data_dir_at(&dir)?;

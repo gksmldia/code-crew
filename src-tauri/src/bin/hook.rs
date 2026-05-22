@@ -6,7 +6,14 @@ use std::os::unix::process::parent_id;
 use std::process::Command;
 use std::process::ExitCode;
 
-const SERVER: &str = "http://127.0.0.1:19876";
+fn server_url() -> String {
+    let port = dirs::home_dir()
+        .map(|h| h.join(".code-crew").join("server.port"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(19876);
+    format!("http://127.0.0.1:{}", port)
+}
 const SAFE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "WebSearch", "TodoWrite"];
 
 /// Walk up the parent-process chain starting from `start_pid` (typically the
@@ -338,6 +345,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let server = server_url();
+
     // If the code-crew widget isn't running, the hook MUST be invisible
     // to Claude Code. Earlier behavior fell through to
     // `default_permission_deny`, so every permission prompt during a
@@ -350,7 +359,7 @@ fn main() -> ExitCode {
         .timeout(std::time::Duration::from_millis(300))
         .build()
         .ok()
-        .and_then(|c| c.get(format!("{}/health", SERVER)).send().ok())
+        .and_then(|c| c.get(format!("{}/health", server)).send().ok())
         .map(|r| r.status().is_success())
         .unwrap_or(false);
     if !widget_alive {
@@ -416,7 +425,7 @@ fn main() -> ExitCode {
                 let client = client.clone();
                 std::thread::spawn(move || {
                     let resp = client
-                        .post(format!("{}/permission", SERVER))
+                        .post(format!("{}/permission", server))
                         .header("content-type", "application/json")
                         .body(body)
                         .send();
@@ -460,7 +469,7 @@ fn main() -> ExitCode {
             let tool = v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("");
 
             let _ = client
-                .post(format!("{}/event", SERVER))
+                .post(format!("{}/event", server))
                 .header("content-type", "application/json")
                 .body(buf.clone())
                 .send();
@@ -470,7 +479,7 @@ fn main() -> ExitCode {
             }
 
             let resp = client
-                .post(format!("{}/permission", SERVER))
+                .post(format!("{}/permission", server))
                 .header("content-type", "application/json")
                 .body(buf)
                 .send();
@@ -512,7 +521,7 @@ fn main() -> ExitCode {
         }
         _ => {
             let _ = client
-                .post(format!("{}/event", SERVER))
+                .post(format!("{}/event", server))
                 .header("content-type", "application/json")
                 .body(buf)
                 .send();

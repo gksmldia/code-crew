@@ -45,7 +45,11 @@ fn append_hook_runtime_diagnostics(out: &mut String, exe: &std::path::Path) -> b
     let _ = writeln!(out);
     let _ = writeln!(out, "runtime diagnostics:");
 
-    let health_url = format!("http://127.0.0.1:{}/health", server::PORT);
+    let port = std::fs::read_to_string(storage::port_file_path())
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(19876);
+    let health_url = format!("http://127.0.0.1:{}/health", port);
     let _ = writeln!(out, "health url: {}", health_url);
     match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_millis(800))
@@ -444,7 +448,10 @@ pub fn run() {
                     "hide" => {
                         if let Some(w) = app.get_webview_window("main") { let _ = w.hide(); }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        let _ = std::fs::remove_file(storage::port_file_path());
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {

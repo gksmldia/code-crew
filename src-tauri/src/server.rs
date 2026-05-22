@@ -13,8 +13,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
-pub const PORT: u16 = 19876;
-
 #[derive(Clone)]
 pub struct AppState {
     pub event_tx: mpsc::UnboundedSender<Event>,
@@ -159,11 +157,23 @@ async fn post_permission_response(
     }
 }
 
+fn write_port_file(port: u16) -> std::io::Result<()> {
+    let path = crate::storage::port_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, port.to_string())?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 pub async fn serve(state: AppState) -> anyhow::Result<()> {
     let app = router(state);
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], PORT));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("code-crew server listening on {}", addr);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    write_port_file(port)?;
+    tracing::info!("code-crew server listening on port {}", port);
     axum::serve(listener, app).await?;
     Ok(())
 }
