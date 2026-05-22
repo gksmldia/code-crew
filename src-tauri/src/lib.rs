@@ -37,14 +37,45 @@ pub struct AppCtx {
     pub permission_decisions: Arc<Mutex<HashMap<String, PermissionDecision>>>,
 }
 
-#[tauri::command]
-async fn install_hooks(app: tauri::AppHandle) -> Result<(), String> {
-    let exe = app
+fn install_hooks_report(app: &tauri::AppHandle) -> Result<String, String> {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "binary name: {}", HOOK_BINARY_NAME);
+    let exe = match app
         .path()
         .resolve(HOOK_BINARY_NAME, tauri::path::BaseDirectory::Resource)
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(p) => {
+            let _ = writeln!(out, "resolve: ok\nresolved: {}", p.display());
+            p
+        }
+        Err(e) => {
+            let _ = writeln!(out, "resolve: FAILED — {}", e);
+            return Err(out);
+        }
+    };
+    let _ = writeln!(out, "exists: {}", exe.exists());
+    if let Ok(meta) = std::fs::metadata(&exe) {
+        let _ = writeln!(out, "size: {} bytes", meta.len());
+    }
     let path_str = normalize_hook_path(exe.to_string_lossy().into_owned());
-    hook_install::install(&path_str).map_err(|e| e.to_string())
+    let _ = writeln!(out, "normalized: {}", path_str);
+    let _ = writeln!(out, "settings: {:?}", hook_install::settings_path());
+    match hook_install::install(&path_str) {
+        Ok(()) => {
+            let _ = writeln!(out, "install: ok");
+            Ok(out)
+        }
+        Err(e) => {
+            let _ = writeln!(out, "install: FAILED — {}", e);
+            Err(out)
+        }
+    }
+}
+
+#[tauri::command]
+async fn install_hooks(app: tauri::AppHandle) -> Result<String, String> {
+    install_hooks_report(&app)
 }
 
 #[tauri::command]
@@ -282,15 +313,15 @@ pub fn run() {
             let _ = storage::ensure_data_dir();
             let _ = storage::cleanup_old(30);
 
-            if let Ok(exe) = app
-                .path()
-                .resolve(HOOK_BINARY_NAME, tauri::path::BaseDirectory::Resource)
-            {
-                let path_str = normalize_hook_path(exe.to_string_lossy().into_owned());
-                if let Err(e) = hook_install::install(&path_str) {
-                    tracing::warn!("hook auto-install failed: {}", e);
-                }
+            let report = match install_hooks_report(app.handle()) {
+                Ok(s) => format!("[ok] {}\n{}", chrono::Local::now(), s),
+                Err(s) => format!("[FAIL] {}\n{}", chrono::Local::now(), s),
+            };
+            if let Ok(dir) = storage::ensure_data_dir() {
+                let log_path = dir.parent().unwrap_or(&dir).join("hook-install.log");
+                let _ = std::fs::write(&log_path, &report);
             }
+            tracing::info!("hook auto-install report:\n{}", report);
 
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
