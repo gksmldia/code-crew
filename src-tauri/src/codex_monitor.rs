@@ -244,11 +244,12 @@ fn map_codex_line(
                     .and_then(|s| serde_json::from_str::<Value>(s).ok())
                     .or_else(|| p.get("arguments").cloned())
                     .unwrap_or(Value::Null);
-                let requires_permission = args
-                    .get("sandbox_permissions")
-                    .and_then(|x| x.as_str())
-                    .map(|x| x == "require_escalated")
-                    .unwrap_or(false);
+                let requires_permission = name == "shell_command"
+                    || args
+                        .get("sandbox_permissions")
+                        .and_then(|x| x.as_str())
+                        .map(|x| x == "require_escalated")
+                        .unwrap_or(false);
                 if requires_permission {
                     let request_id = p
                         .get("call_id")

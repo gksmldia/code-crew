@@ -316,7 +316,22 @@ fn focus_app(app_name: String) -> Result<(), String> {
         ));
         return Ok(());
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let safe_name = app_name.replace('\'', "");
+        let script = format!(
+            "$p = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*{safe_name}*' }} | Select-Object -First 1; \
+             if ($p) {{ \
+               Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class WU {{ [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); }}' -ErrorAction SilentlyContinue; \
+               [WU]::SetForegroundWindow($p.MainWindowHandle) | Out-Null \
+             }}"
+        );
+        let _ = std::process::Command::new("powershell")
+            .args(["-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+            .spawn();
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = app_name;
         Err("focus_app not implemented on this platform".into())
