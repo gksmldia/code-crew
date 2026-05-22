@@ -37,7 +37,100 @@ pub struct AppCtx {
     pub permission_decisions: Arc<Mutex<HashMap<String, PermissionDecision>>>,
 }
 
-fn install_hooks_report(app: &tauri::AppHandle) -> Result<String, String> {
+fn append_hook_runtime_diagnostics(out: &mut String, exe: &std::path::Path) -> bool {
+    use std::fmt::Write;
+    use std::io::Write as IoWrite;
+
+    let mut ok = true;
+    let _ = writeln!(out);
+    let _ = writeln!(out, "runtime diagnostics:");
+
+    let health_url = format!("http://127.0.0.1:{}/health", server::PORT);
+    let _ = writeln!(out, "health url: {}", health_url);
+    match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(800))
+        .build()
+        .and_then(|client| client.get(&health_url).send())
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            let passed = status.is_success() && body.trim() == "ok";
+            ok &= passed;
+            let _ = writeln!(
+                out,
+                "health: {} status={} body={:?}",
+                if passed { "ok" } else { "FAILED" },
+                status,
+                body.trim()
+            );
+        }
+        Err(e) => {
+            ok = false;
+            let _ = writeln!(out, "health: FAILED — {}", e);
+        }
+    }
+
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| String::new());
+    let payload = serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "session_id": format!("code-crew-hook-test-{}", chrono::Utc::now().timestamp_millis()),
+        "cwd": cwd,
+    })
+    .to_string();
+
+    let _ = writeln!(out, "direct hook command: {:?} event", exe);
+    let _ = writeln!(out, "direct hook payload: {}", payload);
+    let mut child = match std::process::Command::new(exe)
+        .arg("event")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = writeln!(out, "direct hook: FAILED to spawn — {}", e);
+            return false;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(payload.as_bytes());
+    }
+    match child.wait_with_output() {
+        Ok(output) => {
+            let passed = output.status.success();
+            ok &= passed;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let _ = writeln!(
+                out,
+                "direct hook: {} status={}",
+                if passed { "ok" } else { "FAILED" },
+                output.status
+            );
+            if !stdout.trim().is_empty() {
+                let _ = writeln!(out, "direct hook stdout: {}", stdout.trim());
+            }
+            if !stderr.trim().is_empty() {
+                let _ = writeln!(out, "direct hook stderr: {}", stderr.trim());
+            }
+        }
+        Err(e) => {
+            ok = false;
+            let _ = writeln!(out, "direct hook: FAILED to wait — {}", e);
+        }
+    }
+
+    ok
+}
+
+fn install_hooks_report(
+    app: &tauri::AppHandle,
+    run_runtime_diagnostics: bool,
+) -> Result<String, String> {
     use std::fmt::Write;
     let mut out = String::new();
     let _ = writeln!(out, "binary name: {}", HOOK_BINARY_NAME);
@@ -61,21 +154,28 @@ fn install_hooks_report(app: &tauri::AppHandle) -> Result<String, String> {
     let path_str = normalize_hook_path(exe.to_string_lossy().into_owned());
     let _ = writeln!(out, "normalized: {}", path_str);
     let _ = writeln!(out, "settings: {:?}", hook_install::settings_path());
-    match hook_install::install(&path_str) {
+    let install_ok = match hook_install::install(&path_str) {
         Ok(()) => {
             let _ = writeln!(out, "install: ok");
-            Ok(out)
+            true
         }
         Err(e) => {
             let _ = writeln!(out, "install: FAILED — {}", e);
-            Err(out)
+            false
         }
+    };
+    let diagnostics_ok =
+        !run_runtime_diagnostics || append_hook_runtime_diagnostics(&mut out, &exe);
+    if install_ok && diagnostics_ok {
+        Ok(out)
+    } else {
+        Err(out)
     }
 }
 
 #[tauri::command]
 async fn install_hooks(app: tauri::AppHandle) -> Result<String, String> {
-    install_hooks_report(&app)
+    install_hooks_report(&app, true)
 }
 
 #[tauri::command]
@@ -232,11 +332,14 @@ fn process_alive(pid: u32) -> bool {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     let target = Pid::from_u32(pid);
     let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[target]),
+    let refreshed = sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
         true,
         ProcessRefreshKind::nothing(),
     );
+    if refreshed == 0 {
+        return true;
+    }
     sys.process(target).is_some()
 }
 
@@ -313,7 +416,7 @@ pub fn run() {
             let _ = storage::ensure_data_dir();
             let _ = storage::cleanup_old(30);
 
-            let report = match install_hooks_report(app.handle()) {
+            let report = match install_hooks_report(app.handle(), false) {
                 Ok(s) => format!("[ok] {}\n{}", chrono::Local::now(), s),
                 Err(s) => format!("[FAIL] {}\n{}", chrono::Local::now(), s),
             };
