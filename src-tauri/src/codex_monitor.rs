@@ -55,6 +55,11 @@ fn poll_file(
     if (bytes.len() as u64) <= last {
         return Ok(());
     }
+    let session_pid = if !offsets.contains_key(path) {
+        pid_holding_file(path)
+    } else {
+        None
+    };
     let new_slice = &bytes[last as usize..];
     let session_id = derive_session_id(path);
 
@@ -67,7 +72,7 @@ fn poll_file(
     let resolved_outputs = collect_output_call_ids(&parsed);
 
     for v in &parsed {
-        if let Some(ev) = map_codex_line(&session_id, path, v, parent_map) {
+        if let Some(ev) = map_codex_line(&session_id, path, v, parent_map, session_pid) {
             if let Event::PermissionRequest { request_id, .. } = &ev {
                 if let Some(call_id) = request_id.strip_prefix("codex-") {
                     if resolved_outputs.contains(call_id) {
@@ -80,6 +85,19 @@ fn poll_file(
     }
     offsets.insert(path.to_path_buf(), bytes.len() as u64);
     Ok(())
+}
+
+fn pid_holding_file(path: &Path) -> Option<u32> {
+    let path_str = path.to_str()?;
+    let output = std::process::Command::new("lsof")
+        .args(["-t", path_str])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.lines().next()?.trim().parse().ok()
 }
 
 fn collect_output_call_ids(items: &[Value]) -> std::collections::HashSet<String> {
@@ -119,6 +137,7 @@ fn map_codex_line(
     path: &Path,
     v: &Value,
     parent_map: &mut HashMap<PathBuf, String>,
+    session_pid: Option<u32>,
 ) -> Option<Event> {
     let top_kind = v.get("type").and_then(|x| x.as_str())?;
     let payload = v.get("payload");
@@ -186,7 +205,7 @@ fn map_codex_line(
                     session_id: session_id.to_string(),
                     cwd: payload_cwd.unwrap_or(fallback_cwd),
                     agent_type: "codex".into(),
-                    source_pid: None,
+                    source_pid: session_pid,
                     pid_chain: None,
                 })
             }
@@ -316,7 +335,7 @@ mod tests {
             }
         });
         let mut pm = HashMap::new();
-        let ev = map_codex_line("rollout-abc", Path::new("/x/rollout-abc.jsonl"), &v, &mut pm)
+        let ev = map_codex_line("rollout-abc", Path::new("/x/rollout-abc.jsonl"), &v, &mut pm, None)
             .unwrap();
         match ev {
             Event::PreToolUse { tool_name, tool_input, .. } => {
@@ -334,10 +353,27 @@ mod tests {
             "payload": {"id": "s1", "cwd": "/tmp/proj"}
         });
         let mut pm = HashMap::new();
-        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm).unwrap();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
         match ev {
-            Event::SessionStart { cwd, .. } => assert_eq!(cwd, "/tmp/proj"),
+            Event::SessionStart { cwd, source_pid, .. } => {
+                assert_eq!(cwd, "/tmp/proj");
+                assert_eq!(source_pid, None);
+            }
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn session_meta_carries_session_pid() {
+        let v = json!({
+            "type": "session_meta",
+            "payload": {"id": "s1", "cwd": "/tmp/proj"}
+        });
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, Some(4242)).unwrap();
+        match ev {
+            Event::SessionStart { source_pid, .. } => assert_eq!(source_pid, Some(4242)),
+            _ => panic!("expected SessionStart"),
         }
     }
 
@@ -345,7 +381,7 @@ mod tests {
     fn maps_task_complete() {
         let v = json!({"type": "event_msg", "payload": {"type": "task_complete"}});
         let mut pm = HashMap::new();
-        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm).unwrap();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
         assert!(matches!(ev, Event::Stop { .. }));
     }
 
@@ -353,7 +389,7 @@ mod tests {
     fn unknown_returns_none() {
         let v = json!({"type":"random"});
         let mut pm = HashMap::new();
-        assert!(map_codex_line("s", Path::new("/x/r.jsonl"), &v, &mut pm).is_none());
+        assert!(map_codex_line("s", Path::new("/x/r.jsonl"), &v, &mut pm, None).is_none());
     }
 
     #[test]
@@ -376,7 +412,7 @@ mod tests {
         });
         let mut pm = HashMap::new();
         let p = Path::new("/x/rollout-child.jsonl");
-        let ev = map_codex_line("child-id", p, &v, &mut pm).unwrap();
+        let ev = map_codex_line("child-id", p, &v, &mut pm, None).unwrap();
         match ev {
             Event::SubagentStart {
                 session_id,
@@ -406,7 +442,7 @@ mod tests {
                 "arguments": "{\"cmd\":\"ls\"}"
             }
         });
-        let ev = map_codex_line("child-id", p, &v, &mut pm).unwrap();
+        let ev = map_codex_line("child-id", p, &v, &mut pm, None).unwrap();
         match ev {
             Event::PreToolUse {
                 session_id,
@@ -442,7 +478,7 @@ mod tests {
         let mut pm = HashMap::new();
         pm.insert(p.to_path_buf(), "parent-id".to_string());
         let v = json!({"type": "event_msg", "payload": {"type": "task_complete"}});
-        let ev = map_codex_line("child-id", p, &v, &mut pm).unwrap();
+        let ev = map_codex_line("child-id", p, &v, &mut pm, None).unwrap();
         match ev {
             Event::SubagentStop { session_id, subagent_id, .. } => {
                 assert_eq!(session_id, "parent-id");

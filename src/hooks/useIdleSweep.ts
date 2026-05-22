@@ -23,7 +23,10 @@ export function useIdleSweep() {
             })
             .catch(() => {});
         }
-        if (sess.state === "idle" && since > STALE_REMOVE_MS) {
+        // STALE_REMOVE_MS는 PID 추적이 불가능한 세션(복원분/lsof 실패)에만 적용.
+        // PID가 있으면 위 is_process_alive가 사망 시 정리하므로, 살아있는 채로
+        // 오래 idle한 세션이 카드에서 사라지지 않게 한다.
+        if (!probePid && sess.state === "idle" && since > STALE_REMOVE_MS) {
           removeSession(sid);
         } else {
           setIdle(sid);
