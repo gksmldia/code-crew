@@ -21,7 +21,7 @@ export function SpeechBubble({ emoji, toolName, text, kind = "tool" }: SpeechBub
         initial={{ opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0 }}
-        className={`scrollbar-chunky w-full max-h-[80px] overflow-y-auto px-3 py-2 rounded-2xl text-xs leading-relaxed text-center max-w-[180px] border border-black/50 dark:border-white/50 ${bg}`}
+        className={`scrollbar-chunky w-full max-h-full overflow-y-auto px-3 py-2 rounded-2xl text-xs leading-relaxed text-center max-w-[180px] border border-black/50 dark:border-white/50 ${bg}`}
       >
         {emoji && <span className="mr-1">{emoji}</span>}
         {toolName && <strong className="mr-1">{toolName}</strong>}

@@ -8,7 +8,7 @@ pub mod storage;
 use server::{AppState, PermissionDecision};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, LogicalSize, Manager, WindowEvent};
 use tokio::sync::{mpsc, Mutex};
 
 #[cfg(target_os = "windows")]
@@ -444,6 +444,24 @@ pub fn run() {
                 let _ = std::fs::write(&log_path, &report);
             }
             tracing::info!("hook auto-install report:\n{}", report);
+
+            // Window must be ≥264px tall (card min-h 200 + header 40 + scroller p-3 24)
+            // or the card overflows the overflow-y-hidden scroller and the pet clips.
+            // set_min_size guards future user resizing; the size bump fixes a state restored
+            // smaller by the window-state plugin.
+            const MIN_W: f64 = 240.0;
+            const MIN_H: f64 = 264.0;
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_min_size(Some(LogicalSize::new(MIN_W, MIN_H)));
+                if let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) {
+                    let logical = size.to_logical::<f64>(scale);
+                    let new_w = logical.width.max(MIN_W);
+                    let new_h = logical.height.max(MIN_H);
+                    if (new_w - logical.width).abs() > 0.5 || (new_h - logical.height).abs() > 0.5 {
+                        let _ = win.set_size(LogicalSize::new(new_w, new_h));
+                    }
+                }
+            }
 
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
