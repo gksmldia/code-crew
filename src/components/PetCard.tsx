@@ -35,10 +35,11 @@ function fallbackText(state: Session["state"]): string {
 
 export function PetCard({ session }: PetCardProps) {
   const isTeam = session.subagents.length > 0;
+  const hasPending = session.pendingPermissions.length > 0;
   const lastRawMsg = session.messages[session.messages.length - 1];
   const lastMsg = (() => {
     if (!lastRawMsg) return undefined;
-    if (lastRawMsg.kind === "permission" && !session.pendingPermission) return undefined;
+    if (lastRawMsg.kind === "permission" && !hasPending) return undefined;
     if ((lastRawMsg.kind === "tool" || lastRawMsg.kind === "error") && session.state === "idle") return undefined;
     if (lastRawMsg.kind === "info" && session.state === "working") return undefined;
     return lastRawMsg;
@@ -172,14 +173,16 @@ export function PetCard({ session }: PetCardProps) {
           {session.messages.map((m) => (
             <ChatMessage key={m.id} message={m} />
           ))}
-          {session.pendingPermission && (
-            <PermissionInline session={session} />
-          )}
+          {session.pendingPermissions.map((pp) => (
+            <PermissionInline key={pp.requestId} session={session} permission={pp} />
+          ))}
         </div>
-      ) : session.pendingPermission ? (
+      ) : hasPending ? (
         <div className="scrollbar-chunky flex-1 overflow-y-auto flex flex-col items-center gap-1 pr-1">
           <Pet animal={mainPet} state={petState} size="md" />
-          <PermissionInline session={session} />
+          {session.pendingPermissions.map((pp) => (
+            <PermissionInline key={pp.requestId} session={session} permission={pp} />
+          ))}
         </div>
       ) : (
         <div className="flex-1 min-h-0 flex flex-col items-center gap-1">

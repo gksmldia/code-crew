@@ -129,6 +129,7 @@ async fn post_permission(
         tool_input: raw.tool_input.clone().unwrap_or(Value::Null),
         request_id: req_id.clone(),
         suggestions: raw.permission_suggestions.clone().unwrap_or(Value::Null),
+        agent_name: raw.agent_type.clone(),
     };
     let _ = s.event_tx.send(ev);
     match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {

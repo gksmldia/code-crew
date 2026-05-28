@@ -71,6 +71,12 @@ pub enum Event {
         request_id: String,
         #[serde(default, skip_serializing_if = "Value::is_null")]
         suggestions: Value,
+        /// Subagent display name when the permission was requested from
+        /// inside a subagent's tool call; `None` for the main agent. Lets
+        /// the widget label *which* subagent is asking when several
+        /// concurrent requests are queued.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_name: Option<String>,
     },
     PermissionCancel {
         request_id: String,
@@ -218,6 +224,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             tool_input: raw.tool_input.unwrap_or(Value::Null),
             request_id: request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             suggestions: raw.permission_suggestions.unwrap_or(Value::Null),
+            agent_name: raw.agent_type.clone(),
         },
         "Stop" => Event::Stop { session_id: sid, cwd: cwd_opt },
         "Notification" => Event::Notification {

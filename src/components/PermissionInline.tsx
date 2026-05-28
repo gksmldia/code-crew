@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Session } from "../types";
+import type { PendingPermission, Session } from "../types";
 import { useStore } from "../store";
 
 interface PermissionInlineProps {
   session: Session;
+  permission: PendingPermission;
 }
 
 function pickAddRulesSuggestion(suggestions: unknown): unknown | undefined {
@@ -48,11 +49,10 @@ function tryParseAskUserQuestion(toolName: string, toolInput: unknown): AskQuest
   return parsed.length > 0 ? parsed : null;
 }
 
-export function PermissionInline({ session }: PermissionInlineProps) {
+export function PermissionInline({ session, permission }: PermissionInlineProps) {
   const [busy, setBusy] = useState(false);
   const ack = useStore((s) => s.acknowledgePermission);
-  const pp = session.pendingPermission;
-  if (!pp) return null;
+  const pp = permission;
   const isCodex = session.agentType === "codex";
 
   const respond = async (behavior: "allow" | "deny", remember = false) => {
@@ -70,7 +70,7 @@ export function PermissionInline({ session }: PermissionInlineProps) {
         remember,
         updatePermissions,
       });
-      ack(session.sessionId);
+      ack(session.sessionId, pp.requestId);
     } finally {
       setBusy(false);
     }
@@ -117,17 +117,24 @@ export function PermissionInline({ session }: PermissionInlineProps) {
           /* hook may have already timed out */
         }
       }
-      ack(session.sessionId);
+      ack(session.sessionId, pp.requestId);
     } finally {
       setBusy(false);
     }
   };
 
+  // When several subagents have requests queued, prefix each card with the
+  // asker so the user can tell them apart. Main-agent requests stay
+  // un-prefixed to match the pre-queue look.
+  const agentTag = pp.agentName && pp.agentName !== "main"
+    ? <span className="opacity-70 font-normal">[{pp.agentName}] </span>
+    : null;
+
   const askQuestions = tryParseAskUserQuestion(pp.toolName, pp.toolInput);
   if (askQuestions) {
     return (
       <div className="text-[11px] bg-amber-500/20 px-2 py-1.5 rounded space-y-1.5">
-        <div className="font-semibold">❔ 질문 (응답은 터미널)</div>
+        <div className="font-semibold">{agentTag}❔ 질문 (응답은 터미널)</div>
         <div className="space-y-1.5 max-h-48 overflow-y-auto">
           {askQuestions.map((q, qi) => (
             <div key={qi}>
@@ -154,7 +161,7 @@ export function PermissionInline({ session }: PermissionInlineProps) {
 
   return (
     <div className="text-[11px] bg-amber-500/20 px-2 py-1.5 rounded space-y-1">
-      <div className="font-semibold">⚠️ {pp.toolName} 허용?</div>
+      <div className="font-semibold">{agentTag}⚠️ {pp.toolName} 허용?</div>
       {isCodex ? (
         <button
           onClick={() => dismissAndFocus()}

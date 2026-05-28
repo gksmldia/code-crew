@@ -39,6 +39,10 @@ export interface PendingPermission {
   toolName: string;
   toolInput: unknown;
   suggestions?: unknown;
+  /** Subagent display name when the request came from a subagent, else
+   *  undefined (i.e. main agent). Used to label which subagent is asking
+   *  when several concurrent requests stack up. */
+  agentName?: string;
 }
 
 export interface Session {
@@ -52,7 +56,11 @@ export interface Session {
   currentTool?: string;
   messages: Message[];
   subagents: Subagent[];
-  pendingPermission?: PendingPermission;
+  /** Queue of permission/question requests still waiting on a user
+   *  decision. Subagents can fire several concurrently — a single slot
+   *  would drop all but the most recent and leave the older hook
+   *  processes parked on /permission until they timed out. */
+  pendingPermissions: PendingPermission[];
   lastSeen: number;
   /** Timestamp set when the session transitioned working → idle via a Stop
    *  event. Drives the transient "relieved" PetState for ~3 s. */
@@ -76,7 +84,7 @@ export type Event =
   | { kind: "PostToolUse"; session_id: string; cwd?: string | null; tool_name: string; success: boolean; transcript_path?: string | null; agent_name?: string | null }
   | { kind: "SubagentStart"; session_id: string; cwd?: string | null; subagent_id: string; subagent_type: string; transcript_path?: string | null }
   | { kind: "SubagentStop"; session_id: string; cwd?: string | null; subagent_id: string }
-  | { kind: "PermissionRequest"; session_id: string; cwd?: string | null; tool_name: string; tool_input: unknown; request_id: string; suggestions?: unknown }
+  | { kind: "PermissionRequest"; session_id: string; cwd?: string | null; tool_name: string; tool_input: unknown; request_id: string; suggestions?: unknown; agent_name?: string | null }
   | { kind: "PermissionCancel"; request_id: string }
   | { kind: "Stop"; session_id: string; cwd?: string | null }
   | { kind: "Notification"; session_id: string; cwd?: string | null; message: string };

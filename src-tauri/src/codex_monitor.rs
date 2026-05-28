@@ -282,6 +282,7 @@ fn map_codex_line(
                         tool_input: args,
                         request_id,
                         suggestions: Value::Null,
+                        agent_name: None,
                     });
                 }
                 Some(Event::PreToolUse {

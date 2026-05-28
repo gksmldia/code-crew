@@ -15,7 +15,7 @@ interface Store {
   sessionOrder: string[];
   applyEvent: (ev: Event) => void;
   setIdle: (sessionId: string) => void;
-  acknowledgePermission: (sessionId: string) => void;
+  acknowledgePermission: (sessionId: string, requestId: string) => void;
   addRestoredMessages: (sessionId: string, msgs: Message[]) => void;
   setProjectKey: (sessionId: string, key: string) => void;
   setDisplayName: (sessionId: string, name: string) => void;
@@ -59,6 +59,7 @@ function ensureSession(s: Record<string, Session>, order: string[], sid: string,
       state: "idle",
       messages: [],
       subagents: [],
+      pendingPermissions: [],
       lastSeen: Date.now(),
       pet: petForSession(sid),
       subagentByPath: {},
@@ -137,16 +138,22 @@ export const useStore = create<Store>((set) => ({
           // Without this, pure-text responses (no tool calls) leave the pet
           // stuck in "idle" for the entire turn — the only working signal we
           // had previously was PreToolUse.
+          //
+          // We deliberately do NOT clear sess.pendingPermissions here:
+          // subagents fire permission requests concurrently with the main
+          // agent's prompt loop, and dropping them silently parks each
+          // request's hook process on /permission until it times out
+          // (see hook.rs::permission long-poll). Pending requests must
+          // only leave the queue via acknowledgePermission or
+          // PermissionCancel.
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
-          if (sess.pendingPermission) sess.pendingPermission = undefined;
-          sess.state = "working";
+          sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
           sess.lastSeen = Date.now();
           break;
         }
         case "PreToolUse": {
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
-          if (sess.pendingPermission) sess.pendingPermission = undefined;
-          sess.state = "working";
+          sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
           sess.currentTool = ev.tool_name;
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
@@ -211,7 +218,10 @@ export const useStore = create<Store>((set) => ({
         }
         case "PostToolUse": {
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
-          if (sess.pendingPermission) sess.pendingPermission = undefined;
+          // Same rationale as UserPromptSubmit/PreToolUse: don't blow away
+          // sibling subagents' pending permissions just because *this*
+          // tool finished. Each request leaves the queue only when its
+          // own request_id is acknowledged or cancelled.
           sess.currentTool = undefined;
           const tp = ev.transcript_path ?? undefined;
           if (isCodexTranscriptPath(tp)) markCodex(sess);
@@ -275,17 +285,26 @@ export const useStore = create<Store>((set) => ({
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
           if (ev.request_id.startsWith("codex-")) markCodex(sess);
           sess.state = "permission";
+          const agentLabel = ev.agent_name && ev.agent_name.length > 0
+            ? shortNameOf(ev.agent_name)
+            : "main";
           const pp: PendingPermission = {
             requestId: ev.request_id,
             toolName: ev.tool_name,
             toolInput: ev.tool_input,
             suggestions: ev.suggestions,
+            agentName: agentLabel,
           };
-          sess.pendingPermission = pp;
+          // Append rather than overwrite — multiple subagents can have
+          // open requests at once and the widget renders one PermissionInline
+          // per entry. Dedup by request_id so a retry doesn't double-add.
+          if (!sess.pendingPermissions.some((p) => p.requestId === pp.requestId)) {
+            sess.pendingPermissions.push(pp);
+          }
           const msg: Message = {
             id: crypto.randomUUID(),
-            agentName: "main",
-            pet: petForAgent("main"),
+            agentName: agentLabel,
+            pet: petForAgent(agentLabel),
             toolEmoji: "⚠️",
             toolName: ev.tool_name,
             text: `${ev.tool_name} 실행 허용?`,
@@ -298,20 +317,30 @@ export const useStore = create<Store>((set) => ({
         }
         case "PermissionCancel": {
           for (const sess of Object.values(s)) {
-            if (sess.pendingPermission?.requestId === ev.request_id) {
-              sess.pendingPermission = undefined;
-              if (sess.state === "permission") sess.state = "idle";
+            const before = sess.pendingPermissions.length;
+            sess.pendingPermissions = sess.pendingPermissions.filter(
+              (p) => p.requestId !== ev.request_id,
+            );
+            if (
+              before !== sess.pendingPermissions.length &&
+              sess.pendingPermissions.length === 0 &&
+              sess.state === "permission"
+            ) {
+              sess.state = "idle";
             }
           }
           break;
         }
         case "Stop": {
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
-          if (sess.pendingPermission) sess.pendingPermission = undefined;
           if (sess.state === "working" || sess.state === "error") {
             sess.justFinishedAt = Date.now();
           }
-          sess.state = "idle";
+          // Pending permissions outlive a Stop — their hook processes are
+          // still parked on /permission and need a widget answer or a
+          // PermissionCancel to unblock. Reflect that in the state so the
+          // card keeps showing the inline UI.
+          sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
           sess.currentTool = undefined;
           sess.lastSeen = Date.now();
           break;
@@ -353,12 +382,21 @@ export const useStore = create<Store>((set) => ({
       };
     }),
 
-  acknowledgePermission: (sessionId) =>
+  acknowledgePermission: (sessionId, requestId) =>
     set((state) => {
       const sess = state.sessions[sessionId];
       if (!sess) return state;
+      const remaining = sess.pendingPermissions.filter((p) => p.requestId !== requestId);
+      // If other subagent requests are still waiting, keep the session in
+      // "permission" so the card keeps the amber ring and the inline
+      // widgets stay visible. Only drop back to idle once the queue is
+      // empty.
+      const nextState: Session["state"] = remaining.length > 0 ? "permission" : "idle";
       return {
-        sessions: { ...state.sessions, [sessionId]: { ...sess, state: "idle", pendingPermission: undefined } },
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...sess, state: nextState, pendingPermissions: remaining },
+        },
       };
     }),
 
