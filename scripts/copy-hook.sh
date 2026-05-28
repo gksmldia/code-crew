@@ -14,20 +14,42 @@ HOST=$(rustc -vV | sed -n 's|host: ||p')
 EXT=""
 [[ "$HOST" == *"windows"* ]] && EXT=".exe"
 
-# Prefer the release build (what tauri build produces); fall back to
-# debug for manual dev-mode invocations.
-RELEASE="src-tauri/target/release/code-crew-hook${EXT}"
-DEBUG="src-tauri/target/debug/code-crew-hook${EXT}"
 DEST="src-tauri/binaries/code-crew-hook${EXT}"
 
-if [ -f "$RELEASE" ] && { [ ! -f "$DEBUG" ] || [ "$RELEASE" -nt "$DEBUG" ]; }; then
-  SRC="$RELEASE"
-elif [ -f "$DEBUG" ]; then
-  SRC="$DEBUG"
-else
-  echo "[copy-hook] no built hook found (neither $RELEASE nor $DEBUG)" >&2
+# Cargo lays the hook out at different paths depending on flags:
+#   - bare `cargo build [--release]`  → target/{debug,release}/code-crew-hook
+#   - `cargo build --target <triple>` → target/<triple>/release/code-crew-hook
+# `tauri build --target universal-apple-darwin` triggers the latter,
+# and CI additionally lipo-merges into target/universal-apple-darwin/release/.
+# Walk every plausible spot and pick the newest existing file.
+shopt -s nullglob
+candidates=( "src-tauri/target/release/code-crew-hook${EXT}" \
+             src-tauri/target/*/release/code-crew-hook${EXT} \
+             "src-tauri/target/debug/code-crew-hook${EXT}" )
+shopt -u nullglob
+
+newest=""
+for f in "${candidates[@]}"; do
+  if [ -z "$newest" ] || [ "$f" -nt "$newest" ]; then
+    newest="$f"
+  fi
+done
+
+if [ -z "$newest" ]; then
+  # No fresh build anywhere. CI's "Build hook binary" step copies the
+  # built binary into binaries/ directly, so trust whatever is already
+  # there as long as it's non-empty.
+  if [ -s "$DEST" ]; then
+    echo "[copy-hook] no fresh build under target/; trusting existing $DEST"
+    exit 0
+  fi
+  echo "[copy-hook] no built hook found and $DEST is missing/empty" >&2
   exit 1
 fi
 
-cp "$SRC" "$DEST"
-echo "[copy-hook] copied $SRC -> $DEST"
+if [ ! -f "$DEST" ] || [ "$newest" -nt "$DEST" ]; then
+  cp "$newest" "$DEST"
+  echo "[copy-hook] copied $newest -> $DEST"
+else
+  echo "[copy-hook] $DEST already current (newest source=$newest)"
+fi
