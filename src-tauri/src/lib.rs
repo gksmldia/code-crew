@@ -138,10 +138,32 @@ fn install_hooks_report(
     use std::fmt::Write;
     let mut out = String::new();
     let _ = writeln!(out, "binary name: {}", HOOK_BINARY_NAME);
-    let exe = match app
-        .path()
-        .resolve(HOOK_BINARY_NAME, tauri::path::BaseDirectory::Resource)
+    // macOS: the hook ships next to the main exe as a Cargo [[bin]] output
+    // (Contents/MacOS/), where the bundler preserves the exec bit. Earlier we
+    // resolved via BaseDirectory::Resource, which silently dropped the +x and
+    // every hook call EACCES'd. Windows still uses Resource because the NSIS
+    // bundler doesn't place secondary [[bin]] outputs next to the main exe,
+    // and Windows has no unix exec bit to lose.
+    let resolved: Result<std::path::PathBuf, String>;
+    #[cfg(target_os = "macos")]
     {
+        let _ = app;
+        resolved = std::env::current_exe()
+            .map_err(|e| format!("current_exe failed: {}", e))
+            .and_then(|p| {
+                p.parent()
+                    .map(|d| d.join(HOOK_BINARY_NAME))
+                    .ok_or_else(|| "current_exe has no parent".to_string())
+            });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        resolved = app
+            .path()
+            .resolve(HOOK_BINARY_NAME, tauri::path::BaseDirectory::Resource)
+            .map_err(|e| e.to_string());
+    }
+    let exe = match resolved {
         Ok(p) => {
             let _ = writeln!(out, "resolve: ok\nresolved: {}", p.display());
             p
