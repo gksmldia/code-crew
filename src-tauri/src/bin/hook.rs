@@ -172,13 +172,13 @@ fn pick_source_pid_windows(chain: &[u32], sys: &sysinfo::System) -> Option<u32> 
 
 #[cfg(windows)]
 fn enrich_with_pid_info(buf: &str) -> String {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing(),
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
     );
     let parent_of = |pid: u32| -> Option<u32> {
         let proc = sys.process(Pid::from_u32(pid))?;
