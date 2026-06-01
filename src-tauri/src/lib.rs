@@ -290,7 +290,42 @@ end tell"#,
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let pids_ps = pid_chain
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let script = format!(
+            "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; \
+             public class WU {{ \
+               [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); \
+               [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int n); \
+             }}' -ErrorAction SilentlyContinue; \
+             foreach ($id in @({pids})) {{ \
+               $p = Get-Process -Id $id -ErrorAction SilentlyContinue; \
+               if ($p -and $p.MainWindowHandle -ne 0) {{ \
+                 [WU]::ShowWindow($p.MainWindowHandle, 9) | Out-Null; \
+                 [WU]::SetForegroundWindow($p.MainWindowHandle) | Out-Null; \
+                 exit 0 \
+               }} \
+             }}; exit 1",
+            pids = pids_ps
+        );
+        focus_log(&format!("focus_pid windows pids={}", pids_ps));
+        let out = std::process::Command::new("powershell")
+            .args(["-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+            .output()
+            .map_err(|e| e.to_string())?;
+        focus_log(&format!("  → status={}", out.status));
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err("no focusable window found in pid chain".into())
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Err("focus_pid not implemented on this platform".into())
     }
