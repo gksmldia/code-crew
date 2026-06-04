@@ -1,7 +1,7 @@
 use crate::events::Event;
 use chrono::{Datelike, Utc};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,6 +22,10 @@ pub fn codex_session_dir() -> Option<PathBuf> {
 pub async fn run(tx: UnboundedSender<Event>) {
     let mut offsets: HashMap<PathBuf, u64> = HashMap::new();
     let mut parent_map: HashMap<PathBuf, String> = HashMap::new();
+    // call_ids of Codex permission requests we've surfaced to the UI but not
+    // yet seen resolved. Persists across poll batches so a later batch's
+    // function_call_output can close the matching card prompt.
+    let mut seen_perm: HashSet<String> = HashSet::new();
     loop {
         if let Some(dir) = codex_session_dir() {
             if dir.exists() {
@@ -35,7 +39,7 @@ pub async fn run(tx: UnboundedSender<Event>) {
                         if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
                             continue;
                         }
-                        let _ = poll_file(&path, &mut offsets, &mut parent_map, &tx);
+                        let _ = poll_file(&path, &mut offsets, &mut parent_map, &mut seen_perm, &tx);
                     }
                 }
             }
@@ -48,6 +52,7 @@ fn poll_file(
     path: &Path,
     offsets: &mut HashMap<PathBuf, u64>,
     parent_map: &mut HashMap<PathBuf, String>,
+    seen_perm: &mut HashSet<String>,
     tx: &UnboundedSender<Event>,
 ) -> std::io::Result<()> {
     let bytes = fs::read(path)?;
@@ -75,14 +80,34 @@ fn poll_file(
         if let Some(ev) = map_codex_line(&session_id, path, v, parent_map, session_pid) {
             if let Event::PermissionRequest { request_id, .. } = &ev {
                 if let Some(call_id) = request_id.strip_prefix("codex-") {
+                    // Already resolved inside this same batch (typical on a
+                    // catch-up read after restart) — never surface a prompt
+                    // that's already been answered.
                     if resolved_outputs.contains(call_id) {
                         continue;
                     }
+                    // Remember it so a later batch's output can close it.
+                    seen_perm.insert(call_id.to_string());
                 }
             }
             let _ = tx.send(ev);
         }
     }
+
+    // Cross-batch resolution. Codex blocks on the user's keypress in its own
+    // TUI, so a permission request and its result land in different poll
+    // batches. When the function_call_output finally appears we cancel the
+    // request we surfaced earlier — otherwise the card keeps piling up prompts
+    // that were already answered in the terminal. Codex writes an output
+    // whether the command was approved or denied, so both clear correctly.
+    for call_id in &resolved_outputs {
+        if seen_perm.remove(call_id) {
+            let _ = tx.send(Event::PermissionCancel {
+                request_id: format!("codex-{}", call_id),
+            });
+        }
+    }
+
     offsets.insert(path.to_path_buf(), bytes.len() as u64);
     Ok(())
 }
@@ -487,5 +512,112 @@ mod tests {
             }
             _ => panic!("expected SubagentStop"),
         }
+    }
+
+    fn escalated_call_line(call_id: &str) -> String {
+        let args = serde_json::to_string(&json!({
+            "cmd": "rm x",
+            "sandbox_permissions": "require_escalated"
+        }))
+        .unwrap();
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": call_id,
+                "arguments": args
+            }
+        })
+        .to_string()
+    }
+
+    fn output_line(call_id: &str) -> String {
+        json!({
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": call_id, "output": "ok"}
+        })
+        .to_string()
+    }
+
+    fn temp_rollout() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cc-codex-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("rollout-2026-06-04T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+    }
+
+    fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Event>) -> Vec<Event> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    // The bug: Codex blocks on the user's keypress in its own TUI, so the
+    // permission request and its result land in different poll batches. The
+    // card must clear when the output arrives in a *later* batch.
+    #[test]
+    fn output_in_later_batch_cancels_surfaced_permission() {
+        use std::io::Write;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let path = temp_rollout();
+        let mut offsets = HashMap::new();
+        let mut pm = HashMap::new();
+        let mut seen = HashSet::new();
+
+        // Batch 1: an escalated exec_command — surfaced, no output yet.
+        std::fs::write(&path, format!("{}\n", escalated_call_line("call_1"))).unwrap();
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        let b1 = drain(&mut rx);
+        assert!(
+            b1.iter().any(|e| matches!(e, Event::PermissionRequest { request_id, .. } if request_id == "codex-call_1")),
+            "batch 1 must surface the permission request"
+        );
+        assert!(
+            !b1.iter().any(|e| matches!(e, Event::PermissionCancel { .. })),
+            "batch 1 must not cancel before any output exists"
+        );
+        assert!(seen.contains("call_1"));
+
+        // Batch 2: the output lands later (user approved in the terminal).
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "{}", output_line("call_1")).unwrap();
+        drop(f);
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        let b2 = drain(&mut rx);
+        assert!(
+            b2.iter().any(|e| matches!(e, Event::PermissionCancel { request_id } if request_id == "codex-call_1")),
+            "batch 2 must cancel the now-resolved permission request"
+        );
+        assert!(!seen.contains("call_1"), "seen set must be cleared after the cancel");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // Catch-up read on restart: request and output already both present. We
+    // must neither surface a stale prompt nor emit a spurious cancel.
+    #[test]
+    fn request_and_output_same_batch_neither_surfaces_nor_cancels() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let path = temp_rollout();
+        let mut offsets = HashMap::new();
+        let mut pm = HashMap::new();
+        let mut seen = HashSet::new();
+
+        std::fs::write(
+            &path,
+            format!("{}\n{}\n", escalated_call_line("c9"), output_line("c9")),
+        )
+        .unwrap();
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        let evs = drain(&mut rx);
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::PermissionRequest { .. })),
+            "a request resolved within the same batch must be suppressed"
+        );
+        assert!(
+            !evs.iter().any(|e| matches!(e, Event::PermissionCancel { .. })),
+            "nothing to cancel when the request was never surfaced"
+        );
+        assert!(seen.is_empty());
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
