@@ -153,6 +153,270 @@ describe("concurrent permission requests in subagent mode", () => {
   });
 });
 
+describe("terminal-answered questions", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("clears AskUserQuestion prompts when the turn stops", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Proceed?",
+            options: [{ label: "Yes" }, { label: "No" }],
+          },
+        ],
+      },
+      request_id: "question-1",
+    });
+
+    expect(pendingIds(useStore.getState().sessions.s1)).toContain("question-1");
+
+    applyEvent({
+      kind: "Stop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(pendingIds(sess)).not.toContain("question-1");
+    expect(sess.state).toBe("idle");
+  });
+
+  it("keeps real permission prompts open when the turn stops", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      request_id: "perm-1",
+    });
+
+    applyEvent({
+      kind: "Stop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(pendingIds(sess)).toContain("perm-1");
+    expect(sess.state).toBe("permission");
+  });
+
+  it("clears a stale AskUserQuestion banner when the agent runs the next tool", () => {
+    // The user answers in the TUI and Claude keeps working mid-turn. There is
+    // no "answered" hook to listen for and Stop is many tool calls away — so
+    // the next tool call from the same agent (which can only happen once the
+    // blocking question was answered) must drop the now-answered banner.
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({ kind: "SessionStart", session_id: "s1", cwd: "/tmp/proj", agent_type: "claude" });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Proceed?", options: [{ label: "Yes" }, { label: "No" }] }] },
+      request_id: "question-1",
+    });
+    expect(pendingIds(useStore.getState().sessions.s1)).toContain("question-1");
+
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(pendingIds(sess)).not.toContain("question-1");
+    expect(sess.state).toBe("working");
+  });
+
+  it("clears a stale AskUserQuestion banner when the next tool completes", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({ kind: "SessionStart", session_id: "s1", cwd: "/tmp/proj", agent_type: "claude" });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Proceed?", options: [{ label: "Yes" }] }] },
+      request_id: "question-1",
+    });
+
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      success: true,
+    });
+
+    expect(pendingIds(useStore.getState().sessions.s1)).not.toContain("question-1");
+  });
+
+  it("keeps the main agent's question pending when a subagent runs a tool", () => {
+    // A concurrent subagent's tool call is NOT proof the main agent's question
+    // was answered — the main agent is still blocked on it. Clearing must be
+    // scoped to the agent that owns the question.
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({ kind: "SessionStart", session_id: "s1", cwd: "/tmp/proj", agent_type: "claude" });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Proceed?", options: [{ label: "Yes" }] }] },
+      request_id: "question-1",
+    });
+
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+      agent_name: "Charles - Team Leader",
+    });
+
+    expect(pendingIds(useStore.getState().sessions.s1)).toContain("question-1");
+  });
+});
+
+describe("terminal-answered tool permissions", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("clears a matching permission when the tool starts after terminal approval", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Edit",
+      tool_input: { file_path: "/tmp/a.ts" },
+      request_id: "edit-1",
+    });
+
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Edit",
+      tool_input: { file_path: "/tmp/a.ts" },
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(pendingIds(sess)).not.toContain("edit-1");
+    expect(sess.state).toBe("working");
+  });
+
+  it("keeps unrelated permissions when a different tool starts", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Edit",
+      tool_input: { file_path: "/tmp/a.ts" },
+      request_id: "edit-1",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      request_id: "bash-1",
+    });
+
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Edit",
+      tool_input: { file_path: "/tmp/a.ts" },
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(pendingIds(sess)).not.toContain("edit-1");
+    expect(pendingIds(sess)).toContain("bash-1");
+    expect(sess.state).toBe("permission");
+  });
+
+  it("clears a matching permission when only the tool completion is observed", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Edit",
+      tool_input: { file_path: "/tmp/a.ts" },
+      request_id: "edit-1",
+    });
+
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Edit",
+      success: true,
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(pendingIds(sess)).not.toContain("edit-1");
+    expect(sess.state).toBe("working");
+  });
+});
+
 function pendingIds(sess: unknown): string[] {
   // Works against either the historical single-slot shape or the current
   // queue shape — keeps the test useful as documentation even after the

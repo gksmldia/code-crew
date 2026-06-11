@@ -111,6 +111,31 @@ function markCodex(sess: Session) {
   if (sess.agentType !== "codex") sess.agentType = "codex";
 }
 
+function isAskUserQuestion(permission: PendingPermission): boolean {
+  return permission.toolName === "AskUserQuestion";
+}
+
+function removeResolvedPermission(session: Session, toolName: string, agentName: string) {
+  const idx = session.pendingPermissions.findIndex((p) => {
+    const pendingAgent = p.agentName && p.agentName.length > 0 ? p.agentName : "main";
+    return p.toolName === toolName && pendingAgent === agentName;
+  });
+  if (idx >= 0) session.pendingPermissions.splice(idx, 1);
+}
+
+// AskUserQuestion has no "answered" hook: Claude Code never fires a PostToolUse
+// we can match when the user picks an option in the TUI, and the turn's Stop
+// can be many tool calls away. But the asking agent is *blocked* until it's
+// answered — so the moment that same agent does any other work, the question
+// is provably answered. Drop its stale banner then instead of leaving it up
+// until Stop (which is what made the prompt linger while Claude kept working).
+function clearAnsweredQuestions(session: Session, agentName: string) {
+  session.pendingPermissions = session.pendingPermissions.filter((p) => {
+    const pendingAgent = p.agentName && p.agentName.length > 0 ? p.agentName : "main";
+    return !(isAskUserQuestion(p) && pendingAgent === agentName);
+  });
+}
+
 export const useStore = create<Store>((set) => ({
   sessions: {},
   sessionOrder: [],
@@ -153,7 +178,6 @@ export const useStore = create<Store>((set) => ({
         }
         case "PreToolUse": {
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
-          sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
           sess.currentTool = ev.tool_name;
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
@@ -199,6 +223,11 @@ export const useStore = create<Store>((set) => ({
             : tp && sess.subagentByPath[tp]
               ? sess.subagentByPath[tp].shortName
               : "main";
+          removeResolvedPermission(sess, ev.tool_name, agentLabel);
+          // Any *other* tool from this agent means a question it had pending was
+          // already answered (it couldn't have proceeded otherwise).
+          if (ev.tool_name !== "AskUserQuestion") clearAnsweredQuestions(sess, agentLabel);
+          sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
 
           const tm = messageFromTool(ev.tool_name, (ev.tool_input as Record<string, unknown>) ?? {});
           const msg: Message = {
@@ -230,8 +259,10 @@ export const useStore = create<Store>((set) => ({
             : tp && sess.subagentByPath[tp]
               ? sess.subagentByPath[tp].shortName
               : "main";
+          removeResolvedPermission(sess, ev.tool_name, agentLabel);
+          if (ev.tool_name !== "AskUserQuestion") clearAnsweredQuestions(sess, agentLabel);
           if (!ev.success) {
-            sess.state = "error";
+            sess.state = sess.pendingPermissions.length > 0 ? "permission" : "error";
             const msg: Message = {
               id: crypto.randomUUID(),
               agentName: agentLabel,
@@ -245,7 +276,7 @@ export const useStore = create<Store>((set) => ({
             pushMessage(sess, msg);
             void persistMessage(sess, msg);
           } else {
-            sess.state = "working";
+            sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
           }
           sess.lastSeen = Date.now();
           break;
@@ -336,10 +367,13 @@ export const useStore = create<Store>((set) => ({
           if (sess.state === "working" || sess.state === "error") {
             sess.justFinishedAt = Date.now();
           }
+          sess.pendingPermissions = sess.pendingPermissions.filter((p) => !isAskUserQuestion(p));
           // Pending permissions outlive a Stop — their hook processes are
           // still parked on /permission and need a widget answer or a
           // PermissionCancel to unblock. Reflect that in the state so the
-          // card keeps showing the inline UI.
+          // card keeps showing the inline UI. AskUserQuestion is different:
+          // once Stop arrives, the terminal-side question has been answered
+          // and there is no permission hook left for the widget to resolve.
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
           sess.currentTool = undefined;
           sess.lastSeen = Date.now();
