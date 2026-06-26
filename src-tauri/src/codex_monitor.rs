@@ -157,6 +157,13 @@ fn derive_session_id(path: &Path) -> String {
     }
 }
 
+fn is_session_end_command(message: &str) -> bool {
+    matches!(
+        message.trim().to_ascii_lowercase().as_str(),
+        "exit" | "/exit" | "clear" | "/clear"
+    )
+}
+
 fn map_codex_line(
     session_id: &str,
     path: &Path,
@@ -258,6 +265,18 @@ fn map_codex_line(
                         session_id: routed_session,
                         cwd: payload_cwd.or(Some(fallback_cwd)),
                     })
+                }
+            }
+            "user_message" => {
+                let msg = payload
+                    .and_then(|p| p.get("message"))
+                    .and_then(|x| x.as_str())?;
+                if parent_for_path.is_none() && is_session_end_command(msg) {
+                    Some(Event::SessionEnd {
+                        session_id: routed_session,
+                    })
+                } else {
+                    None
                 }
             }
             "agent_message" => {
@@ -409,6 +428,43 @@ mod tests {
         let mut pm = HashMap::new();
         let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
         assert!(matches!(ev, Event::Stop { .. }));
+    }
+
+    #[test]
+    fn exact_user_exit_command_ends_session() {
+        let v = json!({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "exit\n"}
+        });
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None)
+            .unwrap();
+        assert!(matches!(ev, Event::SessionEnd { session_id } if session_id == "s1"));
+    }
+
+    #[test]
+    fn exact_user_clear_command_ends_session() {
+        let v = json!({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "/clear"}
+        });
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None)
+            .unwrap();
+        assert!(matches!(ev, Event::SessionEnd { session_id } if session_id == "s1"));
+    }
+
+    #[test]
+    fn prose_mentions_of_exit_or_clear_do_not_end_session() {
+        let v = json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": "Does /clear behave like exit, or should I restart the project?"
+            }
+        });
+        let mut pm = HashMap::new();
+        assert!(map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).is_none());
     }
 
     #[test]
