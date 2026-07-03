@@ -417,6 +417,82 @@ describe("terminal-answered tool permissions", () => {
   });
 });
 
+describe("codex subagent lifecycle", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("returns to idle when the last codex subagent stops", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "parent-id",
+      cwd: "/tmp/proj",
+      agent_type: "codex",
+    });
+    applyEvent({
+      kind: "SubagentStart",
+      session_id: "parent-id",
+      cwd: "/tmp/proj",
+      subagent_id: "codex-child-id",
+      subagent_type: "debugger",
+      transcript_path: "/tmp/rollout-child.jsonl",
+    });
+
+    expect(useStore.getState().sessions["parent-id"].state).toBe("working");
+
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "parent-id",
+      cwd: "/tmp/proj",
+      subagent_id: "codex-child-id",
+    });
+
+    const sess = useStore.getState().sessions["parent-id"];
+    expect(sess.subagents).toHaveLength(0);
+    expect(sess.state).toBe("idle");
+    expect(sess.currentTool).toBeUndefined();
+    expect(sess.justFinishedAt).toBeTypeOf("number");
+  });
+});
+
+describe("terminal api failures", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("returns to idle when a session-limit notification arrives without Stop", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "UserPromptSubmit",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+    });
+    expect(useStore.getState().sessions.s1.state).toBe("working");
+
+    applyEvent({
+      kind: "Notification",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      message: "You've hit your session limit · resets 2:20pm (Asia/Seoul)",
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.state).toBe("idle");
+    expect(sess.currentTool).toBeUndefined();
+    expect(sess.justFinishedAt).toBeTypeOf("number");
+    expect(sess.messages[sess.messages.length - 1]?.text).toContain("session limit");
+  });
+});
+
 function pendingIds(sess: unknown): string[] {
   // Works against either the historical single-slot shape or the current
   // queue shape — keeps the test useful as documentation even after the

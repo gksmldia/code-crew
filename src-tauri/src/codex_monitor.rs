@@ -74,6 +74,10 @@ fn poll_file(
         .filter_map(|l| std::str::from_utf8(l).ok())
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .collect();
+    if last == 0 && last_task_event_is_complete(&parsed) {
+        offsets.insert(path.to_path_buf(), bytes.len() as u64);
+        return Ok(());
+    }
     let resolved_outputs = collect_output_call_ids(&parsed);
 
     for v in &parsed {
@@ -112,6 +116,22 @@ fn poll_file(
     Ok(())
 }
 
+fn last_task_event_is_complete(items: &[Value]) -> bool {
+    items
+        .iter()
+        .filter_map(|v| {
+            if v.get("type").and_then(|x| x.as_str()) != Some("event_msg") {
+                return None;
+            }
+            v.get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(|x| x.as_str())
+                .filter(|kind| *kind == "task_started" || *kind == "task_complete")
+        })
+        .last()
+        == Some("task_complete")
+}
+
 fn pid_holding_file(path: &Path) -> Option<u32> {
     let path_str = path.to_str()?;
     let output = std::process::Command::new("lsof")
@@ -135,7 +155,12 @@ fn collect_output_call_ids(items: &[Value]) -> std::collections::HashSet<String>
             Some(p) => p,
             None => continue,
         };
-        if p.get("type").and_then(|x| x.as_str()) != Some("function_call_output") {
+        if !p
+            .get("type")
+            .and_then(|x| x.as_str())
+            .map(is_tool_output)
+            .unwrap_or(false)
+        {
             continue;
         }
         if let Some(cid) = p.get("call_id").and_then(|x| x.as_str()) {
@@ -143,6 +168,40 @@ fn collect_output_call_ids(items: &[Value]) -> std::collections::HashSet<String>
         }
     }
     out
+}
+
+fn is_tool_call(kind: &str) -> bool {
+    kind.ends_with("_call")
+}
+
+fn is_tool_output(kind: &str) -> bool {
+    kind.ends_with("_output")
+}
+
+fn parse_tool_args(p: &Value) -> Value {
+    p.get("arguments")
+        .or_else(|| p.get("input"))
+        .and_then(|x| {
+            x.as_str()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .or_else(|| Some(x.clone()))
+        })
+        .unwrap_or(Value::Null)
+}
+
+fn tool_name_for_payload(kind: &str, p: &Value) -> String {
+    p.get("name")
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| kind.strip_suffix("_call").unwrap_or(kind).to_string())
+}
+
+fn codex_rate_limit_reached(payload: Option<&Value>) -> bool {
+    payload
+        .and_then(|p| p.get("rate_limits"))
+        .and_then(|r| r.get("rate_limit_reached_type"))
+        .map(|v| !v.is_null())
+        .unwrap_or(false)
 }
 
 fn derive_session_id(path: &Path) -> String {
@@ -243,15 +302,9 @@ fn map_codex_line(
             }
         }
         "event_msg" => match inner_kind? {
-            "task_started" => Some(Event::PreToolUse {
+            "task_started" => Some(Event::UserPromptSubmit {
                 session_id: routed_session,
                 cwd: payload_cwd.or(Some(fallback_cwd)),
-                tool_name: "thinking".into(),
-                tool_input: Value::Null,
-                transcript_path: routed_transcript.clone(),
-                agent_name: None,
-                source_pid: None,
-                pid_chain: None,
             }),
             "task_complete" => {
                 if parent_for_path.is_some() {
@@ -291,22 +344,18 @@ fn map_codex_line(
                     message: msg,
                 })
             }
+            "token_count" if codex_rate_limit_reached(payload) => Some(Event::Stop {
+                session_id: routed_session,
+                cwd: payload_cwd.or(Some(fallback_cwd)),
+            }),
             _ => None,
         },
-        "response_item" => match inner_kind? {
-            "function_call" => {
+        "response_item" => {
+            let inner_kind = inner_kind?;
+            if is_tool_call(inner_kind) {
                 let p = payload?;
-                let name = p
-                    .get("name")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("call")
-                    .to_string();
-                let args = p
-                    .get("arguments")
-                    .and_then(|x| x.as_str())
-                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                    .or_else(|| p.get("arguments").cloned())
-                    .unwrap_or(Value::Null);
+                let name = tool_name_for_payload(inner_kind, p);
+                let args = parse_tool_args(p);
                 let requires_permission = name == "shell_command"
                     || args
                         .get("sandbox_permissions")
@@ -329,7 +378,7 @@ fn map_codex_line(
                         agent_name: None,
                     });
                 }
-                Some(Event::PreToolUse {
+                return Some(Event::PreToolUse {
                     session_id: routed_session,
                     cwd: payload_cwd.or(Some(fallback_cwd)),
                     tool_name: name,
@@ -338,9 +387,9 @@ fn map_codex_line(
                     agent_name: None,
                     source_pid: None,
                     pid_chain: None,
-                })
+                });
             }
-            "function_call_output" => {
+            if is_tool_output(inner_kind) {
                 let output = payload
                     .and_then(|p| p.get("output"))
                     .and_then(|x| x.as_str())
@@ -348,16 +397,19 @@ fn map_codex_line(
                 let success = !output.contains("Process exited with code 1")
                     && !output.contains("Process exited with code 2")
                     && !output.contains("Process exited with code 127");
-                Some(Event::PostToolUse {
+                return Some(Event::PostToolUse {
                     session_id: routed_session,
                     cwd: payload_cwd.or(Some(fallback_cwd)),
-                    tool_name: "function_call".into(),
+                    tool_name: inner_kind
+                        .strip_suffix("_output")
+                        .unwrap_or(inner_kind)
+                        .to_string(),
                     success,
                     transcript_path: routed_transcript,
                     agent_name: None,
-                })
+                });
             }
-            _ => None,
+            None
         },
         _ => None,
     }
@@ -386,6 +438,29 @@ mod tests {
             Event::PreToolUse { tool_name, tool_input, .. } => {
                 assert_eq!(tool_name, "exec_command");
                 assert_eq!(tool_input["cmd"], "ls");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn maps_custom_tool_call() {
+        let v = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** End Patch\n",
+                "call_id": "c1"
+            }
+        });
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("rollout-abc", Path::new("/x/rollout-abc.jsonl"), &v, &mut pm, None)
+            .unwrap();
+        match ev {
+            Event::PreToolUse { tool_name, tool_input, .. } => {
+                assert_eq!(tool_name, "apply_patch");
+                assert_eq!(tool_input, "*** Begin Patch\n*** End Patch\n");
             }
             _ => panic!(),
         }
@@ -428,6 +503,45 @@ mod tests {
         let mut pm = HashMap::new();
         let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
         assert!(matches!(ev, Event::Stop { .. }));
+    }
+
+    #[test]
+    fn maps_task_started_without_synthetic_tool_message() {
+        let v = json!({"type": "event_msg", "payload": {"type": "task_started"}});
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
+        assert!(matches!(ev, Event::UserPromptSubmit { session_id, .. } if session_id == "s1"));
+    }
+
+    #[test]
+    fn maps_codex_rate_limit_token_count_to_stop() {
+        let v = json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "rate_limit_reached_type": "primary"
+                }
+            }
+        });
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
+        assert!(matches!(ev, Event::Stop { session_id, .. } if session_id == "s1"));
+    }
+
+    #[test]
+    fn ignores_codex_token_count_until_limit_is_reached() {
+        let v = json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "rate_limit_reached_type": null
+                }
+            }
+        });
+        let mut pm = HashMap::new();
+        assert!(map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).is_none());
     }
 
     #[test]
@@ -546,12 +660,14 @@ mod tests {
             json!({"type":"response_item","payload":{"type":"function_call","name":"x","call_id":"c1"}}),
             json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"ok"}}),
             json!({"type":"response_item","payload":{"type":"function_call","name":"x","call_id":"c2"}}),
+            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c3","output":"ok"}}),
             json!({"type":"event_msg","payload":{"type":"task_complete"}}),
         ];
         let set = collect_output_call_ids(&items);
         assert!(set.contains("c1"));
+        assert!(set.contains("c3"));
         assert!(!set.contains("c2"));
-        assert_eq!(set.len(), 1);
+        assert_eq!(set.len(), 2);
     }
 
     #[test]
@@ -643,6 +759,82 @@ mod tests {
             "batch 2 must cancel the now-resolved permission request"
         );
         assert!(!seen.contains("call_1"), "seen set must be cleared after the cancel");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn initial_completed_file_is_not_replayed_even_when_process_is_alive() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let path = temp_rollout();
+        let mut offsets = HashMap::new();
+        let mut pm = HashMap::new();
+        let mut seen = HashSet::new();
+
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"cwd":"/tmp/proj"}}),
+                json!({"type":"event_msg","payload":{"type":"task_complete"}})
+            ),
+        )
+        .unwrap();
+
+        let current_pid = std::process::id();
+        let session_id = derive_session_id(&path);
+        let bytes = std::fs::read(&path).unwrap();
+        let parsed: Vec<Value> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| std::str::from_utf8(l).ok())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect();
+
+        assert!(last_task_event_is_complete(&parsed));
+        for v in &parsed {
+            let _ = map_codex_line(&session_id, &path, v, &mut pm, Some(current_pid));
+        }
+
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+
+        assert!(
+            drain(&mut rx).is_empty(),
+            "completed catch-up files must not recreate old cards"
+        );
+        assert_eq!(
+            offsets.get(&path).copied(),
+            Some(std::fs::metadata(&path).unwrap().len())
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn initial_file_with_unfinished_latest_turn_is_replayed() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let path = temp_rollout();
+        let mut offsets = HashMap::new();
+        let mut pm = HashMap::new();
+        let mut seen = HashSet::new();
+
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n",
+                json!({"type":"session_meta","payload":{"cwd":"/tmp/proj"}}),
+                json!({"type":"event_msg","payload":{"type":"task_complete"}}),
+                json!({"type":"event_msg","payload":{"type":"task_started"}})
+            ),
+        )
+        .unwrap();
+
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+
+        assert!(
+            drain(&mut rx).iter().any(|e| matches!(e, Event::UserPromptSubmit { .. })),
+            "an unfinished latest turn must still appear in the UI"
+        );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

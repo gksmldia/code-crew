@@ -9,6 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tower_http::cors::{Any, CorsLayer};
@@ -102,10 +103,100 @@ async fn post_event(
     Json(raw): Json<RawHookPayload>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let agent_type = "claude";
+    watch_for_terminal_api_error(&raw, s.event_tx.clone());
     if let Some(ev) = from_raw(raw, agent_type, None) {
         let _ = s.event_tx.send(ev);
     }
     Ok(Json(serde_json::json!({"ok": true})))
+}
+
+fn watch_for_terminal_api_error(raw: &RawHookPayload, event_tx: mpsc::UnboundedSender<Event>) {
+    if raw.hook_event_name != "UserPromptSubmit" {
+        return;
+    }
+    let Some(transcript_path) = raw
+        .transcript_path
+        .as_ref()
+        .filter(|p| !p.is_empty())
+        .cloned()
+    else {
+        return;
+    };
+    let session_id = raw.session_id.clone();
+    let cwd = raw.cwd.clone();
+
+    tokio::spawn(async move {
+        for delay_ms in [1200_u64, 4000, 10000] {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            let Some(message) = latest_api_error_message(Path::new(&transcript_path)) else {
+                continue;
+            };
+            let _ = event_tx.send(Event::Notification {
+                session_id: session_id.clone(),
+                cwd: cwd.clone(),
+                message,
+            });
+            let _ = event_tx.send(Event::Stop {
+                session_id: session_id.clone(),
+                cwd: cwd.clone(),
+            });
+            break;
+        }
+    });
+}
+
+fn latest_api_error_message(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    for line in bytes.split(|b| *b == b'\n').rev() {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if is_claude_metadata_line(kind) {
+            continue;
+        }
+        if kind != "assistant" {
+            return None;
+        }
+        let is_api_error = v
+            .get("isApiErrorMessage")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false)
+            || v.get("apiErrorStatus").is_some()
+            || v.get("error").is_some();
+        if !is_api_error {
+            return None;
+        }
+        return assistant_text(&v)
+            .or_else(|| v.get("error").and_then(|x| x.as_str()).map(str::to_string))
+            .or_else(|| Some("Claude API error".to_string()));
+    }
+    None
+}
+
+fn is_claude_metadata_line(kind: &str) -> bool {
+    matches!(
+        kind,
+        "last-prompt" | "ai-title" | "mode" | "permission-mode" | "queue-operation"
+    )
+}
+
+fn assistant_text(v: &Value) -> Option<String> {
+    let content = v.pointer("/message/content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    for item in content.as_array()? {
+        if item.get("type").and_then(|x| x.as_str()) == Some("text") {
+            if let Some(text) = item.get("text").and_then(|x| x.as_str()) {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
 }
 
 async fn post_permission(
@@ -184,6 +275,8 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use serde_json::json;
+    use std::fs;
     use tower::ServiceExt;
 
     fn make_state() -> (AppState, mpsc::UnboundedReceiver<Event>) {
@@ -234,5 +327,59 @@ mod tests {
             Event::SessionStart { session_id, .. } => assert_eq!(session_id, "sX"),
             _ => panic!("wrong event"),
         }
+    }
+
+    fn temp_transcript() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("code-crew-claude-{}.jsonl", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn latest_api_error_message_skips_trailing_claude_metadata() {
+        let path = temp_transcript();
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                json!({"type":"user","message":{"role":"user","content":"go"}}),
+                json!({
+                    "type":"assistant",
+                    "isApiErrorMessage":true,
+                    "apiErrorStatus":429,
+                    "error":"rate_limit",
+                    "message":{"content":[{"type":"text","text":"You've hit your session limit · resets 2:20pm (Asia/Seoul)"}]}
+                }),
+                json!({"type":"last-prompt","lastPrompt":"go"}),
+                json!({"type":"mode","mode":"normal"})
+            ),
+        )
+        .unwrap();
+
+        let message = latest_api_error_message(&path).unwrap();
+        assert!(message.contains("session limit"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn latest_api_error_message_ignores_error_behind_newer_user_prompt() {
+        let path = temp_transcript();
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n",
+                json!({
+                    "type":"assistant",
+                    "isApiErrorMessage":true,
+                    "message":{"content":[{"type":"text","text":"You've hit your session limit"}]}
+                }),
+                json!({"type":"last-prompt","lastPrompt":"old"}),
+                json!({"type":"user","message":{"role":"user","content":"try again"}})
+            ),
+        )
+        .unwrap();
+
+        assert!(latest_api_error_message(&path).is_none());
+
+        let _ = fs::remove_file(path);
     }
 }

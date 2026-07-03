@@ -136,6 +136,11 @@ function clearAnsweredQuestions(session: Session, agentName: string) {
   });
 }
 
+function isTerminalApiError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("session limit") || lower.includes("rate limit");
+}
+
 export const useStore = create<Store>((set) => ({
   sessions: {},
   sessionOrder: [],
@@ -310,6 +315,12 @@ export const useStore = create<Store>((set) => ({
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
           if (ev.subagent_id.startsWith("codex-")) markCodex(sess);
           sess.subagents = sess.subagents.filter((sa) => sa.id !== ev.subagent_id);
+          if (sess.subagents.length === 0 && sess.state === "working" && !sess.currentTool) {
+            sess.justFinishedAt = Date.now();
+            sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
+            sess.currentTool = undefined;
+            sess.lastSeen = Date.now();
+          }
           break;
         }
         case "PermissionRequest": {
@@ -399,6 +410,14 @@ export const useStore = create<Store>((set) => ({
           };
           pushMessage(sess, msg);
           void persistMessage(sess, msg);
+          if (isTerminalApiError(ev.message)) {
+            if (sess.state === "working" || sess.state === "error") {
+              sess.justFinishedAt = Date.now();
+            }
+            sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
+            sess.currentTool = undefined;
+            sess.lastSeen = Date.now();
+          }
           break;
         }
       }
