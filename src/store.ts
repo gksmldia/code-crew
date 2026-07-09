@@ -231,7 +231,12 @@ export const useStore = create<Store>((set) => ({
           removeResolvedPermission(sess, ev.tool_name, agentLabel);
           // Any *other* tool from this agent means a question it had pending was
           // already answered (it couldn't have proceeded otherwise).
-          if (ev.tool_name !== "AskUserQuestion") clearAnsweredQuestions(sess, agentLabel);
+          if (ev.tool_name !== "AskUserQuestion") {
+            clearAnsweredQuestions(sess, agentLabel);
+          } else {
+            // 뒤따르는 PermissionRequest는 agent 정보 없이 오므로 실제 질문 주체를 저장
+            sess.lastAskAgent = agentLabel;
+          }
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
 
           const tm = messageFromTool(ev.tool_name, (ev.tool_input as Record<string, unknown>) ?? {});
@@ -329,7 +334,10 @@ export const useStore = create<Store>((set) => ({
           sess.state = "permission";
           const agentLabel = ev.agent_name && ev.agent_name.length > 0
             ? shortNameOf(ev.agent_name)
-            : "main";
+            : ev.tool_name === "AskUserQuestion" && sess.lastAskAgent
+              ? sess.lastAskAgent
+              : "main";
+          if (ev.tool_name === "AskUserQuestion") sess.lastAskAgent = undefined; // 재사용 방지
           const pp: PendingPermission = {
             requestId: ev.request_id,
             toolName: ev.tool_name,

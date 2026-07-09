@@ -69,6 +69,10 @@ export interface Session {
   mainTranscriptPath?: string;
   subagentByPath: Record<string, { name: string; shortName: string }>;
   pendingSubagentTypes: string[];
+  /** 직전 AskUserQuestion PreToolUse의 에이전트 라벨. 뒤따르는
+   *  PermissionRequest에는 서브에이전트 정보가 없어 "main"으로 오분류되는데,
+   *  이 값으로 실제 질문 주체를 배너에 붙여준다. */
+  lastAskAgent?: string;
   /** GUI host PID captured by `code-crew-hook` walking up its PPID chain. */
   sourcePid?: number;
   /** Full ancestor PID list (innermost first). Tried in order on focus so

@@ -307,6 +307,44 @@ describe("terminal-answered questions", () => {
 
     expect(pendingIds(useStore.getState().sessions.s1)).toContain("question-1");
   });
+
+  it("clears a subagent's AskUserQuestion banner when that subagent runs the next tool", () => {
+    // 서브에이전트가 물어본 질문: PreToolUse엔 서브에이전트 라벨이 있지만
+    // 뒤따르는 PermissionRequest엔 agent 정보가 없다(Claude Code가 permission
+    // hook엔 agent_type를 안 실어줌). 배너가 "main"으로 오분류되면 그 서브에이전트가
+    // 작업을 이어가도 clearAnsweredQuestions가 매칭되지 않아 배너가 안 지워진다.
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({ kind: "SessionStart", session_id: "s1", cwd: "/tmp/proj", agent_type: "claude" });
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Proceed?", options: [{ label: "Yes" }] }] },
+      agent_name: "Brian",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Proceed?", options: [{ label: "Yes" }] }] },
+      request_id: "question-1",
+    });
+    expect(pendingIds(useStore.getState().sessions.s1)).toContain("question-1");
+
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+      agent_name: "Brian",
+    });
+
+    expect(pendingIds(useStore.getState().sessions.s1)).not.toContain("question-1");
+  });
 });
 
 describe("terminal-answered tool permissions", () => {
