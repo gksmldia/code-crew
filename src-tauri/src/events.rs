@@ -24,6 +24,8 @@ pub enum Event {
         session_id: String,
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid_chain: Option<Vec<u32>>,
@@ -40,6 +42,8 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid_chain: Option<Vec<u32>>,
@@ -53,6 +57,8 @@ pub enum Event {
         transcript_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +92,8 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid_chain: Option<Vec<u32>>,
@@ -97,6 +105,8 @@ pub enum Event {
         session_id: String,
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid_chain: Option<Vec<u32>>,
@@ -105,6 +115,8 @@ pub enum Event {
         session_id: String,
         cwd: Option<String>,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,6 +169,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
         "UserPromptSubmit" => Event::UserPromptSubmit {
             session_id: sid,
             cwd: cwd_opt,
+            agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
         },
@@ -167,6 +180,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             tool_input: raw.tool_input.unwrap_or(Value::Null),
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
+            agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
         },
@@ -184,6 +198,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
                 .unwrap_or(true),
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
+            agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
         },
@@ -198,6 +213,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             success: false,
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
+            agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
         },
@@ -251,12 +267,14 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             request_id: request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             suggestions: raw.permission_suggestions.unwrap_or(Value::Null),
             agent_name: raw.agent_type.clone(),
+            agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
         },
         "Stop" => Event::Stop {
             session_id: sid,
             cwd: cwd_opt,
+            agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
         },
@@ -264,6 +282,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             session_id: sid,
             cwd: cwd_opt,
             message: raw.message.unwrap_or_default(),
+            agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
         },

@@ -7,6 +7,17 @@ const SWEEP_MS = 5 * 1000;
 const DEAD_PROCESS_GRACE_MS = 3 * 1000;
 const STALE_REMOVE_MS = 30 * 60 * 1000;
 export const CODEX_IDLE_REMOVE_MS = 5 * 60 * 1000;
+export const CODEX_STALE_WORKING_IDLE_MS = 90 * 1000;
+
+export function shouldForceIdleStaleWorkingSession(sess: Session, since: number) {
+  return (
+    sess.agentType === "codex" &&
+    sess.state === "working" &&
+    sess.pendingPermissions.length === 0 &&
+    sess.subagents.length === 0 &&
+    since > CODEX_STALE_WORKING_IDLE_MS
+  );
+}
 
 export function shouldRemoveIdleSession(
   sess: Session,
@@ -50,7 +61,7 @@ export function useIdleSweep() {
         if (shouldRemoveIdleSession(sess, since, Boolean(probePid))) {
           removeSession(sid);
         } else {
-          setIdle(sid);
+          setIdle(sid, shouldForceIdleStaleWorkingSession(sess, since));
         }
       }
     }, SWEEP_MS);

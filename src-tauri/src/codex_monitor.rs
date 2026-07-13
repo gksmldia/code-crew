@@ -305,6 +305,7 @@ fn map_codex_line(
             "task_started" => Some(Event::UserPromptSubmit {
                 session_id: routed_session,
                 cwd: payload_cwd.or(Some(fallback_cwd)),
+                agent_type: Some("codex".into()),
                 source_pid: None,
                 pid_chain: None,
             }),
@@ -319,6 +320,7 @@ fn map_codex_line(
                     Some(Event::Stop {
                         session_id: routed_session,
                         cwd: payload_cwd.or(Some(fallback_cwd)),
+                        agent_type: Some("codex".into()),
                         source_pid: None,
                         pid_chain: None,
                     })
@@ -346,6 +348,7 @@ fn map_codex_line(
                     session_id: routed_session,
                     cwd: payload_cwd.or(Some(fallback_cwd)),
                     message: msg,
+                    agent_type: Some("codex".into()),
                     source_pid: None,
                     pid_chain: None,
                 })
@@ -353,6 +356,7 @@ fn map_codex_line(
             "token_count" if codex_rate_limit_reached(payload) => Some(Event::Stop {
                 session_id: routed_session,
                 cwd: payload_cwd.or(Some(fallback_cwd)),
+                agent_type: Some("codex".into()),
                 source_pid: None,
                 pid_chain: None,
             }),
@@ -364,6 +368,7 @@ fn map_codex_line(
                 return Some(Event::UserPromptSubmit {
                     session_id: routed_session,
                     cwd: payload_cwd.or(Some(fallback_cwd)),
+                    agent_type: Some("codex".into()),
                     source_pid: None,
                     pid_chain: None,
                 });
@@ -392,6 +397,7 @@ fn map_codex_line(
                         request_id,
                         suggestions: Value::Null,
                         agent_name: None,
+                        agent_type: Some("codex".into()),
                         source_pid: None,
                         pid_chain: None,
                     });
@@ -403,6 +409,7 @@ fn map_codex_line(
                     tool_input: args,
                     transcript_path: routed_transcript,
                     agent_name: None,
+                    agent_type: Some("codex".into()),
                     source_pid: None,
                     pid_chain: None,
                 });
@@ -425,6 +432,7 @@ fn map_codex_line(
                     success,
                     transcript_path: routed_transcript,
                     agent_name: None,
+                    agent_type: Some("codex".into()),
                     source_pid: None,
                     pid_chain: None,
                 });

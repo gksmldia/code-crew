@@ -137,12 +137,14 @@ fn watch_for_terminal_api_error(raw: &RawHookPayload, event_tx: mpsc::UnboundedS
                 session_id: session_id.clone(),
                 cwd: cwd.clone(),
                 message,
+                agent_type: Some("claude".into()),
                 source_pid,
                 pid_chain: pid_chain.clone(),
             });
             let _ = event_tx.send(Event::Stop {
                 session_id: session_id.clone(),
                 cwd: cwd.clone(),
+                agent_type: Some("claude".into()),
                 source_pid,
                 pid_chain: pid_chain.clone(),
             });
@@ -227,6 +229,7 @@ async fn post_permission(
         request_id: req_id.clone(),
         suggestions: raw.permission_suggestions.clone().unwrap_or(Value::Null),
         agent_name: raw.agent_type.clone(),
+        agent_type: Some("claude".into()),
         source_pid: raw.source_pid,
         pid_chain: raw.pid_chain.clone(),
     };

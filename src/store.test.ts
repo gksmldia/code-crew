@@ -532,6 +532,29 @@ describe("terminal api failures", () => {
     expect(sess.justFinishedAt).toBeTypeOf("number");
   });
 
+  it("recreates a removed codex session as codex from progress events", () => {
+    const { applyEvent, removeSession } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "codex",
+    });
+    removeSession("s1");
+
+    useStore.getState().applyEvent({
+      kind: "UserPromptSubmit",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "codex",
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.agentType).toBe("codex");
+    expect(sess.displayName).toBe("proj");
+  });
+
   it("returns to idle when a session-limit notification arrives without Stop", () => {
     const { applyEvent } = useStore.getState();
 

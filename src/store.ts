@@ -14,7 +14,7 @@ interface Store {
   sessions: Record<string, Session>;
   sessionOrder: string[];
   applyEvent: (ev: Event) => void;
-  setIdle: (sessionId: string) => void;
+  setIdle: (sessionId: string, force?: boolean) => void;
   acknowledgePermission: (sessionId: string, requestId: string) => void;
   addRestoredMessages: (sessionId: string, msgs: Message[]) => void;
   setProjectKey: (sessionId: string, key: string) => void;
@@ -81,9 +81,14 @@ function ensureSession(s: Record<string, Session>, order: string[], sid: string,
   return s[sid];
 }
 
-function withCwd(cwd?: string | null): Partial<Session> | undefined {
-  if (!cwd) return undefined;
-  return { cwd, displayName: lastSegment(cwd) };
+function withEventDefaults(cwd?: string | null, agentType?: Session["agentType"] | null): Partial<Session> | undefined {
+  const defaults: Partial<Session> = {};
+  if (cwd) {
+    defaults.cwd = cwd;
+    defaults.displayName = lastSegment(cwd);
+  }
+  if (agentType) defaults.agentType = agentType;
+  return Object.keys(defaults).length > 0 ? defaults : undefined;
 }
 
 function pushMessage(session: Session, msg: Message) {
@@ -176,7 +181,7 @@ export const useStore = create<Store>((set) => ({
           // (see hook.rs::permission long-poll). Pending requests must
           // only leave the queue via acknowledgePermission or
           // PermissionCancel.
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
@@ -184,7 +189,7 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "PreToolUse": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           sess.currentTool = ev.tool_name;
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
@@ -258,7 +263,7 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "PostToolUse": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           // Same rationale as UserPromptSubmit/PreToolUse: don't blow away
@@ -296,7 +301,7 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "SubagentStart": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, undefined));
           const tp = ev.transcript_path ?? undefined;
           if (ev.subagent_id.startsWith("codex-") || isCodexTranscriptPath(tp)) markCodex(sess);
           // If we already mapped this transcript_path, reuse the same shortName
@@ -321,7 +326,7 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "SubagentStop": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, undefined));
           if (ev.subagent_id.startsWith("codex-")) markCodex(sess);
           sess.subagents = sess.subagents.filter((sa) => sa.id !== ev.subagent_id);
           if (sess.subagents.length === 0 && sess.state === "working" && !sess.currentTool) {
@@ -333,7 +338,7 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "PermissionRequest": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           if (ev.request_id.startsWith("codex-")) markCodex(sess);
@@ -388,7 +393,7 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "Stop": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           if (sess.state === "working" || sess.state === "error") {
@@ -415,7 +420,7 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "Notification": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           const msg: Message = {
@@ -445,12 +450,12 @@ export const useStore = create<Store>((set) => ({
       return { sessions: s, sessionOrder: order };
     }),
 
-  setIdle: (sessionId) =>
+  setIdle: (sessionId, force = false) =>
     set((state) => {
       const sess = state.sessions[sessionId];
       if (!sess) return state;
       const since = Date.now() - sess.lastSeen;
-      if (since < IDLE_DELAY_MS) return state;
+      if (!force && since < IDLE_DELAY_MS) return state;
       return {
         sessions: { ...state.sessions, [sessionId]: { ...sess, state: "idle", currentTool: undefined } },
       };
