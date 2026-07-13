@@ -500,6 +500,38 @@ describe("terminal api failures", () => {
     resetStore();
   });
 
+  it("keeps codex agent messages in working state until task complete", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "codex",
+    });
+
+    expect(useStore.getState().sessions.s1.state).toBe("idle");
+
+    applyEvent({
+      kind: "Notification",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      message: "정리 중입니다.",
+    });
+
+    expect(useStore.getState().sessions.s1.state).toBe("working");
+
+    applyEvent({
+      kind: "Stop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.state).toBe("idle");
+    expect(sess.justFinishedAt).toBeTypeOf("number");
+  });
+
   it("returns to idle when a session-limit notification arrives without Stop", () => {
     const { applyEvent } = useStore.getState();
 

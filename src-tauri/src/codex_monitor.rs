@@ -360,6 +360,14 @@ fn map_codex_line(
         },
         "response_item" => {
             let inner_kind = inner_kind?;
+            if inner_kind == "reasoning" || inner_kind == "message" {
+                return Some(Event::UserPromptSubmit {
+                    session_id: routed_session,
+                    cwd: payload_cwd.or(Some(fallback_cwd)),
+                    source_pid: None,
+                    pid_chain: None,
+                });
+            }
             if is_tool_call(inner_kind) {
                 let p = payload?;
                 let name = tool_name_for_payload(inner_kind, p);
@@ -520,6 +528,22 @@ mod tests {
     #[test]
     fn maps_task_started_without_synthetic_tool_message() {
         let v = json!({"type": "event_msg", "payload": {"type": "task_started"}});
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
+        assert!(matches!(ev, Event::UserPromptSubmit { session_id, .. } if session_id == "s1"));
+    }
+
+    #[test]
+    fn maps_reasoning_as_codex_progress() {
+        let v = json!({"type": "response_item", "payload": {"type": "reasoning"}});
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
+        assert!(matches!(ev, Event::UserPromptSubmit { session_id, .. } if session_id == "s1"));
+    }
+
+    #[test]
+    fn maps_message_as_codex_progress() {
+        let v = json!({"type": "response_item", "payload": {"type": "message"}});
         let mut pm = HashMap::new();
         let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
         assert!(matches!(ev, Event::UserPromptSubmit { session_id, .. } if session_id == "s1"));

@@ -435,6 +435,9 @@ export const useStore = create<Store>((set) => ({
             sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
             sess.currentTool = undefined;
             sess.lastSeen = Date.now();
+          } else if (sess.agentType === "codex" && sess.pendingPermissions.length === 0) {
+            sess.state = "working";
+            sess.lastSeen = Date.now();
           }
           break;
         }

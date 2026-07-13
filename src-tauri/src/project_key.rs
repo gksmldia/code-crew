@@ -55,7 +55,6 @@ pub fn hash_short(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn cwd_fallback_when_no_git() {
