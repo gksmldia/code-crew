@@ -529,6 +529,23 @@ describe("terminal api failures", () => {
     expect(sess.justFinishedAt).toBeTypeOf("number");
     expect(sess.messages[sess.messages.length - 1]?.text).toContain("session limit");
   });
+
+  it("captures source pid and pid chain from notification events", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "Notification",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      message: "done",
+      source_pid: 123,
+      pid_chain: [123, 456],
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.sourcePid).toBe(123);
+    expect(sess.pidChain).toEqual([123, 456]);
+  });
 });
 
 function pendingIds(sess: unknown): string[] {

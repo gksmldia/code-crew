@@ -83,12 +83,12 @@ export interface Session {
 export type Event =
   | { kind: "SessionStart"; session_id: string; cwd: string; agent_type: AgentType; source_pid?: number | null; pid_chain?: number[] | null }
   | { kind: "SessionEnd"; session_id: string }
-  | { kind: "UserPromptSubmit"; session_id: string; cwd?: string | null }
+  | { kind: "UserPromptSubmit"; session_id: string; cwd?: string | null; source_pid?: number | null; pid_chain?: number[] | null }
   | { kind: "PreToolUse"; session_id: string; cwd?: string | null; tool_name: string; tool_input: unknown; transcript_path?: string | null; agent_name?: string | null; source_pid?: number | null; pid_chain?: number[] | null }
-  | { kind: "PostToolUse"; session_id: string; cwd?: string | null; tool_name: string; success: boolean; transcript_path?: string | null; agent_name?: string | null }
+  | { kind: "PostToolUse"; session_id: string; cwd?: string | null; tool_name: string; success: boolean; transcript_path?: string | null; agent_name?: string | null; source_pid?: number | null; pid_chain?: number[] | null }
   | { kind: "SubagentStart"; session_id: string; cwd?: string | null; subagent_id: string; subagent_type: string; transcript_path?: string | null }
   | { kind: "SubagentStop"; session_id: string; cwd?: string | null; subagent_id: string }
-  | { kind: "PermissionRequest"; session_id: string; cwd?: string | null; tool_name: string; tool_input: unknown; request_id: string; suggestions?: unknown; agent_name?: string | null }
+  | { kind: "PermissionRequest"; session_id: string; cwd?: string | null; tool_name: string; tool_input: unknown; request_id: string; suggestions?: unknown; agent_name?: string | null; source_pid?: number | null; pid_chain?: number[] | null }
   | { kind: "PermissionCancel"; request_id: string }
-  | { kind: "Stop"; session_id: string; cwd?: string | null }
-  | { kind: "Notification"; session_id: string; cwd?: string | null; message: string };
+  | { kind: "Stop"; session_id: string; cwd?: string | null; source_pid?: number | null; pid_chain?: number[] | null }
+  | { kind: "Notification"; session_id: string; cwd?: string | null; message: string; source_pid?: number | null; pid_chain?: number[] | null };

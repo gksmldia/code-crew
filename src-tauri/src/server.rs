@@ -124,6 +124,8 @@ fn watch_for_terminal_api_error(raw: &RawHookPayload, event_tx: mpsc::UnboundedS
     };
     let session_id = raw.session_id.clone();
     let cwd = raw.cwd.clone();
+    let source_pid = raw.source_pid;
+    let pid_chain = raw.pid_chain.clone();
 
     tokio::spawn(async move {
         for delay_ms in [1200_u64, 4000, 10000] {
@@ -135,10 +137,14 @@ fn watch_for_terminal_api_error(raw: &RawHookPayload, event_tx: mpsc::UnboundedS
                 session_id: session_id.clone(),
                 cwd: cwd.clone(),
                 message,
+                source_pid,
+                pid_chain: pid_chain.clone(),
             });
             let _ = event_tx.send(Event::Stop {
                 session_id: session_id.clone(),
                 cwd: cwd.clone(),
+                source_pid,
+                pid_chain: pid_chain.clone(),
             });
             break;
         }
@@ -221,6 +227,8 @@ async fn post_permission(
         request_id: req_id.clone(),
         suggestions: raw.permission_suggestions.clone().unwrap_or(Value::Null),
         agent_name: raw.agent_type.clone(),
+        source_pid: raw.source_pid,
+        pid_chain: raw.pid_chain.clone(),
     };
     let _ = s.event_tx.send(ev);
     match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {

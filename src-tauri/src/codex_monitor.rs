@@ -305,6 +305,8 @@ fn map_codex_line(
             "task_started" => Some(Event::UserPromptSubmit {
                 session_id: routed_session,
                 cwd: payload_cwd.or(Some(fallback_cwd)),
+                source_pid: None,
+                pid_chain: None,
             }),
             "task_complete" => {
                 if parent_for_path.is_some() {
@@ -317,6 +319,8 @@ fn map_codex_line(
                     Some(Event::Stop {
                         session_id: routed_session,
                         cwd: payload_cwd.or(Some(fallback_cwd)),
+                        source_pid: None,
+                        pid_chain: None,
                     })
                 }
             }
@@ -342,11 +346,15 @@ fn map_codex_line(
                     session_id: routed_session,
                     cwd: payload_cwd.or(Some(fallback_cwd)),
                     message: msg,
+                    source_pid: None,
+                    pid_chain: None,
                 })
             }
             "token_count" if codex_rate_limit_reached(payload) => Some(Event::Stop {
                 session_id: routed_session,
                 cwd: payload_cwd.or(Some(fallback_cwd)),
+                source_pid: None,
+                pid_chain: None,
             }),
             _ => None,
         },
@@ -376,6 +384,8 @@ fn map_codex_line(
                         request_id,
                         suggestions: Value::Null,
                         agent_name: None,
+                        source_pid: None,
+                        pid_chain: None,
                     });
                 }
                 return Some(Event::PreToolUse {
@@ -407,6 +417,8 @@ fn map_codex_line(
                     success,
                     transcript_path: routed_transcript,
                     agent_name: None,
+                    source_pid: None,
+                    pid_chain: None,
                 });
             }
             None

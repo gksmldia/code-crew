@@ -177,6 +177,8 @@ export const useStore = create<Store>((set) => ({
           // only leave the queue via acknowledgePermission or
           // PermissionCancel.
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
           sess.lastSeen = Date.now();
           break;
@@ -257,6 +259,8 @@ export const useStore = create<Store>((set) => ({
         }
         case "PostToolUse": {
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           // Same rationale as UserPromptSubmit/PreToolUse: don't blow away
           // sibling subagents' pending permissions just because *this*
           // tool finished. Each request leaves the queue only when its
@@ -330,6 +334,8 @@ export const useStore = create<Store>((set) => ({
         }
         case "PermissionRequest": {
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           if (ev.request_id.startsWith("codex-")) markCodex(sess);
           sess.state = "permission";
           const agentLabel = ev.agent_name && ev.agent_name.length > 0
@@ -383,6 +389,8 @@ export const useStore = create<Store>((set) => ({
         }
         case "Stop": {
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           if (sess.state === "working" || sess.state === "error") {
             sess.justFinishedAt = Date.now();
           }
@@ -408,6 +416,8 @@ export const useStore = create<Store>((set) => ({
         }
         case "Notification": {
           const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           const msg: Message = {
             id: crypto.randomUUID(),
             agentName: "main",
