@@ -60,6 +60,10 @@ fn poll_file(
     if (bytes.len() as u64) <= last {
         return Ok(());
     }
+    if is_guardian_rollout(&bytes) {
+        offsets.insert(path.to_path_buf(), bytes.len() as u64);
+        return Ok(());
+    }
     let session_pid = if !offsets.contains_key(path) {
         pid_holding_file(path)
     } else {
@@ -116,6 +120,29 @@ fn poll_file(
     Ok(())
 }
 
+fn is_guardian_rollout(bytes: &[u8]) -> bool {
+    let Some(meta) = bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .find_map(|line| {
+            std::str::from_utf8(line)
+                .ok()
+                .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        })
+    else {
+        return false;
+    };
+
+    meta.get("type").and_then(|value| value.as_str()) == Some("session_meta")
+        && meta
+            .get("payload")
+            .and_then(|payload| payload.get("source"))
+            .and_then(|source| source.get("subagent"))
+            .and_then(|subagent| subagent.get("other"))
+            .and_then(|other| other.as_str())
+            == Some("guardian")
+}
+
 fn last_task_event_is_complete(items: &[Value]) -> bool {
     items
         .iter()
@@ -126,10 +153,11 @@ fn last_task_event_is_complete(items: &[Value]) -> bool {
             v.get("payload")
                 .and_then(|p| p.get("type"))
                 .and_then(|x| x.as_str())
-                .filter(|kind| *kind == "task_started" || *kind == "task_complete")
+                .filter(|kind| *kind == "task_started" || *kind == "task_complete" || *kind == "turn_aborted")
         })
         .last()
-        == Some("task_complete")
+        .map(|kind| kind == "task_complete" || kind == "turn_aborted")
+        .unwrap_or(false)
 }
 
 fn pid_holding_file(path: &Path) -> Option<u32> {
@@ -309,7 +337,7 @@ fn map_codex_line(
                 source_pid: None,
                 pid_chain: None,
             }),
-            "task_complete" => {
+            "task_complete" | "turn_aborted" => {
                 if parent_for_path.is_some() {
                     Some(Event::SubagentStop {
                         session_id: routed_session,
@@ -531,6 +559,14 @@ mod tests {
         let mut pm = HashMap::new();
         let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
         assert!(matches!(ev, Event::Stop { .. }));
+    }
+
+    #[test]
+    fn maps_turn_aborted_to_stop() {
+        let v = json!({"type": "event_msg", "payload": {"type": "turn_aborted"}});
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None).unwrap();
+        assert!(matches!(ev, Event::Stop { session_id, .. } if session_id == "s1"));
     }
 
     #[test]
@@ -808,6 +844,70 @@ mod tests {
     }
 
     #[test]
+    fn guardian_rollout_never_emits_card_events() {
+        use std::io::Write;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let path = temp_rollout();
+        let mut offsets = HashMap::new();
+        let mut pm = HashMap::new();
+        let mut seen = HashSet::new();
+
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "guardian-id",
+                        "session_id": "parent-id",
+                        "parent_thread_id": "parent-id",
+                        "cwd": "/tmp/proj",
+                        "source": {"subagent": {"other": "guardian"}},
+                        "thread_source": "subagent"
+                    }
+                }),
+                json!({"type": "event_msg", "payload": {"type": "task_started"}})
+            ),
+        )
+        .unwrap();
+
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        assert!(
+            drain(&mut rx).is_empty(),
+            "guardian must not create a session card"
+        );
+
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type": "event_msg", "payload": {"type": "agent_message", "message": "{\"outcome\":\"allow\"}"}})
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type": "event_msg", "payload": {"type": "task_complete"}})
+        )
+        .unwrap();
+        drop(file);
+
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        assert!(
+            drain(&mut rx).is_empty(),
+            "guardian updates must stay hidden"
+        );
+        assert_eq!(
+            offsets.get(&path).copied(),
+            Some(std::fs::metadata(&path).unwrap().len())
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn initial_completed_file_is_not_replayed_even_when_process_is_alive() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let path = temp_rollout();
@@ -849,6 +949,45 @@ mod tests {
         assert_eq!(
             offsets.get(&path).copied(),
             Some(std::fs::metadata(&path).unwrap().len())
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn initial_aborted_file_is_not_replayed_even_when_process_is_alive() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let path = temp_rollout();
+        let mut offsets = HashMap::new();
+        let mut pm = HashMap::new();
+        let mut seen = HashSet::new();
+
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n",
+                json!({"type":"session_meta","payload":{"cwd":"/tmp/proj"}}),
+                json!({"type":"event_msg","payload":{"type":"task_started"}}),
+                json!({"type":"event_msg","payload":{"type":"turn_aborted"}})
+            ),
+        )
+        .unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        let parsed: Vec<Value> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| std::str::from_utf8(l).ok())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect();
+
+        assert!(last_task_event_is_complete(&parsed));
+
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+
+        assert!(
+            drain(&mut rx).is_empty(),
+            "aborted catch-up files must not recreate old cards"
         );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

@@ -39,12 +39,10 @@ export function shouldRemoveIdleSession(
 }
 
 export function useIdleSweep() {
-  const setIdle = useStore((s) => s.setIdle);
-  const removeSession = useStore((s) => s.removeSession);
-  const sessions = useStore((s) => s.sessions);
   useEffect(() => {
     const t = setInterval(() => {
       const now = Date.now();
+      const { sessions, setIdle, removeSession } = useStore.getState();
       for (const [sid, sess] of Object.entries(sessions)) {
         const since = now - sess.lastSeen;
         const probePid = sess.pidChain?.[0] ?? sess.sourcePid;
@@ -66,5 +64,5 @@ export function useIdleSweep() {
       }
     }, SWEEP_MS);
     return () => clearInterval(t);
-  }, [sessions, setIdle, removeSession]);
+  }, []);
 }
