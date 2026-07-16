@@ -329,6 +329,13 @@ fn map_codex_line(
                 })
             }
         }
+        "turn_context" => payload_cwd.map(|cwd| Event::SessionStart {
+            session_id: session_id.to_string(),
+            cwd,
+            agent_type: "codex".into(),
+            source_pid: session_pid,
+            pid_chain: None,
+        }),
         "event_msg" => match inner_kind? {
             "task_started" => Some(Event::UserPromptSubmit {
                 session_id: routed_session,
@@ -536,6 +543,25 @@ mod tests {
                 assert_eq!(source_pid, None);
             }
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn maps_turn_context_as_session_start() {
+        let v = json!({
+            "type": "turn_context",
+            "payload": {"cwd": "/tmp/proj"}
+        });
+        let mut pm = HashMap::new();
+        let ev = map_codex_line("s1", Path::new("/x/r.jsonl"), &v, &mut pm, Some(4242)).unwrap();
+        match ev {
+            Event::SessionStart { session_id, cwd, agent_type, source_pid, .. } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(cwd, "/tmp/proj");
+                assert_eq!(agent_type, "codex");
+                assert_eq!(source_pid, Some(4242));
+            }
+            _ => panic!("expected SessionStart"),
         }
     }
 
