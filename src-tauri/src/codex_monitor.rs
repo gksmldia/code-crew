@@ -84,8 +84,9 @@ fn poll_file(
     }
     let resolved_outputs = collect_output_call_ids(&parsed);
 
+    let mut emitted_permission_calls = HashSet::new();
     for v in &parsed {
-        if let Some(ev) = map_codex_line(&session_id, path, v, parent_map, session_pid) {
+        for ev in map_codex_events(&session_id, path, v, parent_map, session_pid) {
             if let Event::PermissionRequest { request_id, .. } = &ev {
                 if let Some(call_id) = request_id.strip_prefix("codex-") {
                     // Already resolved inside this same batch (typical on a
@@ -94,8 +95,14 @@ fn poll_file(
                     if resolved_outputs.contains(call_id) {
                         continue;
                     }
-                    // Remember it so a later batch's output can close it.
-                    seen_perm.insert(call_id.to_string());
+                    // A native permission mapping and the nested
+                    // exec_command fallback can describe the same Codex call.
+                    // Keep the original tool event, but surface one prompt.
+                    if !emitted_permission_calls.insert(call_id.to_string())
+                        || !seen_perm.insert(call_id.to_string())
+                    {
+                        continue;
+                    }
                 }
             }
             let _ = tx.send(ev);
@@ -249,6 +256,296 @@ fn is_session_end_command(message: &str) -> bool {
         message.trim().to_ascii_lowercase().as_str(),
         "exit" | "/exit" | "clear" | "/clear"
     )
+}
+
+fn map_codex_events(
+    session_id: &str,
+    path: &Path,
+    v: &Value,
+    parent_map: &mut HashMap<PathBuf, String>,
+    session_pid: Option<u32>,
+) -> Vec<Event> {
+    let mut events = map_codex_line(session_id, path, v, parent_map, session_pid)
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if let Some(event) = nested_exec_permission_event(session_id, path, v, parent_map) {
+        events.push(event);
+    }
+
+    events
+}
+
+fn nested_exec_permission_event(
+    session_id: &str,
+    path: &Path,
+    v: &Value,
+    parent_map: &HashMap<PathBuf, String>,
+) -> Option<Event> {
+    if v.get("type").and_then(|value| value.as_str()) != Some("response_item") {
+        return None;
+    }
+    let payload = v.get("payload")?;
+    if payload.get("type").and_then(|value| value.as_str()) != Some("custom_tool_call")
+        || payload.get("name").and_then(|value| value.as_str()) != Some("exec")
+    {
+        return None;
+    }
+
+    let input = payload.get("input").and_then(|value| value.as_str())?;
+    let tool_input = escalated_exec_command_input(input)?;
+    let call_id = payload.get("call_id").and_then(|value| value.as_str())?;
+    let cwd = payload
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| Some(String::new()));
+    let parent_for_path = parent_map.get(path).cloned();
+
+    Some(Event::PermissionRequest {
+        session_id: parent_for_path.unwrap_or_else(|| session_id.to_string()),
+        cwd,
+        tool_name: "exec_command".into(),
+        tool_input,
+        request_id: format!("codex-{}", call_id),
+        suggestions: Value::Null,
+        agent_name: None,
+        agent_type: Some("codex".into()),
+        source_pid: None,
+        pid_chain: None,
+    })
+}
+
+fn escalated_exec_command_input(input: &str) -> Option<Value> {
+    let mut search_from = 0;
+    while let Some((object_start, object_end)) = find_exec_command_object(input, search_from) {
+        if let Some(tool_input) = parse_escalated_exec_object(&input[object_start..object_end]) {
+            return Some(tool_input);
+        }
+        search_from = object_end;
+    }
+    None
+}
+
+fn find_exec_command_object(input: &str, search_from: usize) -> Option<(usize, usize)> {
+    let bytes = input.as_bytes();
+    let mut index = search_from;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => index = skip_js_string(bytes, index),
+            b'/' if starts_with_at(bytes, index, b"//") || starts_with_at(bytes, index, b"/*") => {
+                index = skip_js_comment(bytes, index);
+            }
+            b't' if is_identifier_boundary(bytes, index, b"tools")
+                && starts_with_at(bytes, index, b"tools") =>
+            {
+                let mut cursor = skip_js_whitespace_and_comments(bytes, index + b"tools".len());
+                if bytes.get(cursor) != Some(&b'.') {
+                    index += 1;
+                    continue;
+                }
+                cursor = skip_js_whitespace_and_comments(bytes, cursor + 1);
+                if !is_identifier_boundary(bytes, cursor, b"exec_command")
+                    || !starts_with_at(bytes, cursor, b"exec_command")
+                {
+                    index += 1;
+                    continue;
+                }
+                cursor = skip_js_whitespace_and_comments(bytes, cursor + b"exec_command".len());
+                if bytes.get(cursor) != Some(&b'(') {
+                    index += 1;
+                    continue;
+                }
+                cursor = skip_js_whitespace_and_comments(bytes, cursor + 1);
+                if bytes.get(cursor) != Some(&b'{') {
+                    index += 1;
+                    continue;
+                }
+                if let Some(end) = find_matching_js_object(bytes, cursor) {
+                    return Some((cursor, end));
+                }
+                return None;
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn parse_escalated_exec_object(object: &str) -> Option<Value> {
+    let bytes = object.as_bytes();
+    if bytes.first() != Some(&b'{') || bytes.last() != Some(&b'}') {
+        return None;
+    }
+
+    let mut tool_input = serde_json::Map::new();
+    let mut index = 1;
+    while index < bytes.len() - 1 {
+        index = skip_js_whitespace_and_comments(bytes, index);
+        if index >= bytes.len() - 1 {
+            break;
+        }
+
+        let key_start = index;
+        while bytes
+            .get(index)
+            .is_some_and(|byte| is_js_identifier_byte(*byte))
+        {
+            index += 1;
+        }
+        if key_start == index {
+            return None;
+        }
+        let key = std::str::from_utf8(&bytes[key_start..index]).ok()?;
+        index = skip_js_whitespace_and_comments(bytes, index);
+        if bytes.get(index) != Some(&b':') {
+            return None;
+        }
+        index = skip_js_whitespace_and_comments(bytes, index + 1);
+        let value_start = index;
+        let value_end = find_js_value_end(bytes, index)?;
+        let value = object[value_start..value_end].trim();
+        if let Some(value) = parse_exec_argument_value(key, value) {
+            tool_input.insert(key.to_string(), value);
+        }
+        index = skip_js_whitespace_and_comments(bytes, value_end);
+        match bytes.get(index) {
+            Some(b',') => index += 1,
+            Some(b'}') | None => break,
+            _ => return None,
+        }
+    }
+    (tool_input
+        .get("sandbox_permissions")
+        .and_then(Value::as_str)
+        == Some("require_escalated"))
+    .then_some(Value::Object(tool_input))
+}
+
+fn parse_exec_argument_value(key: &str, value: &str) -> Option<Value> {
+    match key {
+        "cmd" | "justification" | "sandbox_permissions" => {
+            parse_js_string(value).map(Value::String)
+        }
+        "prefix_rule" => serde_json::from_str(value).ok().filter(Value::is_array),
+        _ => None,
+    }
+}
+
+fn parse_js_string(value: &str) -> Option<String> {
+    serde_json::from_str(value).ok()
+}
+
+fn find_js_value_end(bytes: &[u8], mut index: usize) -> Option<usize> {
+    let mut depth = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => index = skip_js_string(bytes, index),
+            b'/' if starts_with_at(bytes, index, b"//") || starts_with_at(bytes, index, b"/*") => {
+                index = skip_js_comment(bytes, index);
+            }
+            b'{' | b'[' | b'(' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' | b']' | b')' if depth > 0 => {
+                depth -= 1;
+                index += 1;
+            }
+            b',' | b'}' if depth == 0 => return Some(index),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn find_matching_js_object(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 1;
+    let mut index = start + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => index = skip_js_string(bytes, index),
+            b'/' if starts_with_at(bytes, index, b"//") || starts_with_at(bytes, index, b"/*") => {
+                index = skip_js_comment(bytes, index);
+            }
+            b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                index += 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn skip_js_whitespace_and_comments(bytes: &[u8], mut index: usize) -> usize {
+    loop {
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if starts_with_at(bytes, index, b"//") || starts_with_at(bytes, index, b"/*") {
+            index = skip_js_comment(bytes, index);
+            continue;
+        }
+        return index;
+    }
+}
+
+fn skip_js_comment(bytes: &[u8], index: usize) -> usize {
+    if starts_with_at(bytes, index, b"//") {
+        return bytes[index + 2..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|offset| index + 2 + offset + 1)
+            .unwrap_or(bytes.len());
+    }
+    if starts_with_at(bytes, index, b"/*") {
+        return bytes[index + 2..]
+            .windows(2)
+            .position(|pair| pair == b"*/")
+            .map(|offset| index + 2 + offset + 2)
+            .unwrap_or(bytes.len());
+    }
+    index
+}
+
+fn skip_js_string(bytes: &[u8], index: usize) -> usize {
+    let quote = bytes[index];
+    let mut cursor = index + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor += 2,
+            byte if byte == quote => return cursor + 1,
+            _ => cursor += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn starts_with_at(bytes: &[u8], index: usize, needle: &[u8]) -> bool {
+    bytes.get(index..index + needle.len()) == Some(needle)
+}
+
+fn is_identifier_boundary(bytes: &[u8], index: usize, identifier: &[u8]) -> bool {
+    let before_is_identifier = index
+        .checked_sub(1)
+        .and_then(|position| bytes.get(position))
+        .is_some_and(|byte| is_js_identifier_byte(*byte));
+    let after_is_identifier = bytes
+        .get(index + identifier.len())
+        .is_some_and(|byte| is_js_identifier_byte(*byte));
+    !before_is_identifier && !after_is_identifier
+}
+
+fn is_js_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
 }
 
 fn map_codex_line(
@@ -526,6 +823,65 @@ mod tests {
                 assert_eq!(tool_input, "*** Begin Patch\n*** End Patch\n");
             }
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn custom_exec_keeps_pre_tool_use_and_adds_structured_permission_request() {
+        let input = r#"
+            const example = "tools.exec_command({ sandbox_permissions: 'require_escalated' })";
+            // tools.exec_command({ sandbox_permissions: "require_escalated" })
+            /* tools.exec_command({ sandbox_permissions: "require_escalated" }) */
+            await tools.exec_command({
+                cmd: "echo already approved",
+                sandbox_permissions: "use_default"
+            });
+            await tools.exec_command({
+                cmd: "git status",
+                justification: "Inspect the working tree",
+                prefix_rule: ["git", "status"],
+                sandbox_permissions: "require_escalated"
+            });
+        "#;
+        let v = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "input": input,
+                "call_id": "outer-call"
+            }
+        });
+        let mut pm = HashMap::new();
+        let events = map_codex_events("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None);
+
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            Event::PreToolUse {
+                tool_name,
+                tool_input,
+                ..
+            } => {
+                assert_eq!(tool_name, "exec");
+                assert_eq!(tool_input, input);
+            }
+            _ => panic!("expected original PreToolUse"),
+        }
+        match &events[1] {
+            Event::PermissionRequest {
+                request_id,
+                tool_name,
+                tool_input,
+                ..
+            } => {
+                assert_eq!(request_id, "codex-outer-call");
+                assert_eq!(tool_name, "exec_command");
+                assert_eq!(tool_input["cmd"], "git status");
+                assert_eq!(tool_input["justification"], "Inspect the working tree");
+                assert_eq!(tool_input["prefix_rule"], json!(["git", "status"]));
+                assert_eq!(tool_input["sandbox_permissions"], "require_escalated");
+            }
+            _ => panic!("expected nested PermissionRequest"),
         }
     }
 
@@ -810,10 +1166,40 @@ mod tests {
         .to_string()
     }
 
+    fn custom_exec_call_line(call_id: &str) -> String {
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "call_id": call_id,
+                "input": r#"await tools.exec_command({
+                    cmd: "git status",
+                    justification: "Inspect the working tree",
+                    prefix_rule: ["git", "status"],
+                    sandbox_permissions: "require_escalated"
+                });"#
+            }
+        })
+        .to_string()
+    }
+
     fn output_line(call_id: &str) -> String {
         json!({
             "type": "response_item",
             "payload": {"type": "function_call_output", "call_id": call_id, "output": "ok"}
+        })
+        .to_string()
+    }
+
+    fn custom_exec_output_line(call_id: &str) -> String {
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": call_id,
+                "output": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+            }
         })
         .to_string()
     }
@@ -828,11 +1214,42 @@ mod tests {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
-    // The bug: Codex blocks on the user's keypress in its own TUI, so the
-    // permission request and its result land in different poll batches. The
-    // card must clear when the output arrives in a *later* batch.
     #[test]
-    fn output_in_later_batch_cancels_surfaced_permission() {
+    fn same_batch_output_hides_nested_permission_but_keeps_outer_pre_tool_use() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let path = temp_rollout();
+        let mut offsets = HashMap::new();
+        let mut pm = HashMap::new();
+        let mut seen = HashSet::new();
+
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                custom_exec_call_line("same-batch"),
+                custom_exec_output_line("same-batch")
+            ),
+        )
+        .unwrap();
+        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        let events = drain(&mut rx);
+
+        assert!(events.iter().any(
+            |event| matches!(event, Event::PreToolUse { tool_name, .. } if tool_name == "exec")
+        ));
+        assert!(!events.iter().any(
+            |event| matches!(event, Event::PermissionRequest { request_id, .. } if request_id == "codex-same-batch")
+        ));
+        assert!(!seen.contains("same-batch"));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // Codex blocks on the user's keypress in its own TUI, so the permission
+    // request and its result can land in different poll batches. The card
+    // must clear the nested request when the output arrives later.
+    #[test]
+    fn custom_exec_output_in_later_batch_cancels_surfaced_permission() {
         use std::io::Write;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let path = temp_rollout();
@@ -840,23 +1257,32 @@ mod tests {
         let mut pm = HashMap::new();
         let mut seen = HashSet::new();
 
-        // Batch 1: an escalated exec_command — surfaced, no output yet.
-        std::fs::write(&path, format!("{}\n", escalated_call_line("call_1"))).unwrap();
+        // Batch 1: a nested escalated exec_command — surfaced, no output yet.
+        std::fs::write(&path, format!("{}\n", custom_exec_call_line("call_1"))).unwrap();
         poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
         let b1 = drain(&mut rx);
+        assert!(
+            b1.iter()
+                .any(|e| matches!(e, Event::PreToolUse { tool_name, .. } if tool_name == "exec")),
+            "batch 1 must keep the outer custom tool event"
+        );
         assert!(
             b1.iter().any(|e| matches!(e, Event::PermissionRequest { request_id, .. } if request_id == "codex-call_1")),
             "batch 1 must surface the permission request"
         );
         assert!(
-            !b1.iter().any(|e| matches!(e, Event::PermissionCancel { .. })),
+            !b1.iter()
+                .any(|e| matches!(e, Event::PermissionCancel { .. })),
             "batch 1 must not cancel before any output exists"
         );
         assert!(seen.contains("call_1"));
 
         // Batch 2: the output lands later (user approved in the terminal).
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(f, "{}", output_line("call_1")).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(f, "{}", custom_exec_output_line("call_1")).unwrap();
         drop(f);
         poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
         let b2 = drain(&mut rx);
@@ -864,7 +1290,10 @@ mod tests {
             b2.iter().any(|e| matches!(e, Event::PermissionCancel { request_id } if request_id == "codex-call_1")),
             "batch 2 must cancel the now-resolved permission request"
         );
-        assert!(!seen.contains("call_1"), "seen set must be cleared after the cancel");
+        assert!(
+            !seen.contains("call_1"),
+            "seen set must be cleared after the cancel"
+        );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

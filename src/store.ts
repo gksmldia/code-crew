@@ -359,21 +359,22 @@ export const useStore = create<Store>((set) => ({
           // Append rather than overwrite — multiple subagents can have
           // open requests at once and the widget renders one PermissionInline
           // per entry. Dedup by request_id so a retry doesn't double-add.
-          if (!sess.pendingPermissions.some((p) => p.requestId === pp.requestId)) {
+          const isNewRequest = !sess.pendingPermissions.some((p) => p.requestId === pp.requestId);
+          if (isNewRequest) {
             sess.pendingPermissions.push(pp);
+            const msg: Message = {
+              id: crypto.randomUUID(),
+              agentName: agentLabel,
+              pet: petForAgent(agentLabel),
+              toolEmoji: "⚠️",
+              toolName: ev.tool_name,
+              text: `${ev.tool_name} 실행 허용?`,
+              kind: "permission",
+              timestamp: Date.now(),
+            };
+            pushMessage(sess, msg);
+            void persistMessage(sess, msg);
           }
-          const msg: Message = {
-            id: crypto.randomUUID(),
-            agentName: agentLabel,
-            pet: petForAgent(agentLabel),
-            toolEmoji: "⚠️",
-            toolName: ev.tool_name,
-            text: `${ev.tool_name} 실행 허용?`,
-            kind: "permission",
-            timestamp: Date.now(),
-          };
-          pushMessage(sess, msg);
-          void persistMessage(sess, msg);
           break;
         }
         case "PermissionCancel": {

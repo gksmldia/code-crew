@@ -77,7 +77,8 @@ pub fn install_at(settings_path: &Path, hook_binary_path: &str) -> std::io::Resu
             "hooks": [
                 {
                     "type": "command",
-                    "command": format!("\"{}\" event", hook_binary_path),
+                    "command": hook_binary_path,
+                    "args": ["event"],
                 }
             ]
         }));
@@ -113,7 +114,8 @@ pub fn install_at(settings_path: &Path, hook_binary_path: &str) -> std::io::Resu
         "hooks": [
             {
                 "type": "command",
-                "command": format!("\"{}\" permission", hook_binary_path),
+                "command": hook_binary_path,
+                "args": ["permission"],
             }
         ]
     }));
@@ -152,9 +154,8 @@ mod tests {
         assert_eq!(perm.len(), 1);
         let inner = &perm[0]["hooks"][0];
         assert_eq!(inner["type"], "command");
-        let cmd = inner["command"].as_str().unwrap();
-        assert!(cmd.contains("code-crew-hook"), "command should reference binary: {}", cmd);
-        assert!(cmd.ends_with(" permission"), "command should end in subcommand: {}", cmd);
+        assert_eq!(inner["command"], "/path/to/code-crew-hook");
+        assert_eq!(inner["args"], json!(["permission"]));
     }
 
     #[test]
@@ -193,7 +194,8 @@ mod tests {
         assert_eq!(arr.len(), 1, "legacy http entry should have been removed");
         let inner = &arr[0]["hooks"][0];
         assert_eq!(inner["type"], "command");
-        assert!(inner["command"].as_str().unwrap().contains("code-crew-hook"));
+        assert_eq!(inner["command"], "/path/to/code-crew-hook");
+        assert_eq!(inner["args"], json!(["permission"]));
     }
 
     #[test]
@@ -219,11 +221,48 @@ mod tests {
             1,
             "stale subcommand entry should have been replaced, not stacked"
         );
-        let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(
-            cmd, "\"/new/path/code-crew-hook\" event",
-            "subcommand should be refreshed to `event` with the new binary path"
-        );
+        let inner = &arr[0]["hooks"][0];
+        assert_eq!(inner["command"], "/new/path/code-crew-hook");
+        assert_eq!(inner["args"], json!(["event"]));
+    }
+
+    #[test]
+    fn migrates_shell_form_permission_to_exec_form() {
+        let path = tmp_settings();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"hooks":{"PermissionRequest":[{"matcher":"*","hooks":[{"type":"command","command":"\"C:/Old Path/code-crew-hook.exe\" permission"}]}]}}"#,
+        )
+        .unwrap();
+
+        let hook_path = "C:/New Path/code-crew-hook.exe";
+        install_at(&path, hook_path).unwrap();
+
+        let v: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let permissions = v["hooks"]["PermissionRequest"].as_array().unwrap();
+        assert_eq!(permissions.len(), 1);
+        let inner = &permissions[0]["hooks"][0];
+        assert_eq!(inner["command"], hook_path);
+        assert_eq!(inner["args"], json!(["permission"]));
+    }
+
+    #[test]
+    fn uses_exec_form_for_windows_path_with_spaces() {
+        let path = tmp_settings();
+        let hook_path = "C:/Users/Test User/AppData/Local/code-crew/code-crew-hook.exe";
+        install_at(&path, hook_path).unwrap();
+
+        let v: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let event = &v["hooks"]["SessionStart"][0]["hooks"][0];
+        assert_eq!(event["command"], hook_path);
+        assert_eq!(event["args"], json!(["event"]));
+        assert!(event.get("shell").is_none());
+
+        let permission = &v["hooks"]["PermissionRequest"][0]["hooks"][0];
+        assert_eq!(permission["command"], hook_path);
+        assert_eq!(permission["args"], json!(["permission"]));
+        assert!(permission.get("shell").is_none());
     }
 
     #[test]

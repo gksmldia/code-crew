@@ -18,9 +18,9 @@ const HOOK_BINARY_NAME: &str = "code-crew-hook";
 
 fn normalize_hook_path(s: String) -> String {
     // Tauri returns Windows resource paths in verbatim form (`\\?\C:\…`).
-    // Claude Code runs hook commands through bash, which can't resolve the
-    // verbatim prefix and consumes backslashes inside double-quoted strings
-    // as escapes. Forward slashes under Git Bash avoid both problems.
+    // Hook registration uses Claude Code's exec form, so the executable path
+    // is passed as one value without shell parsing. Strip the verbatim prefix
+    // and keep a stable forward-slash form that Windows accepts directly.
     #[cfg(target_os = "windows")]
     {
         let stripped = s.strip_prefix(r"\\?\").unwrap_or(&s);
@@ -173,10 +173,26 @@ fn install_hooks_report(
             return Err(out);
         }
     };
-    let _ = writeln!(out, "exists: {}", exe.exists());
-    if let Ok(meta) = std::fs::metadata(&exe) {
-        let _ = writeln!(out, "size: {} bytes", meta.len());
+    let metadata = match std::fs::metadata(&exe) {
+        Ok(meta) => {
+            let _ = writeln!(out, "exists: true");
+            let _ = writeln!(out, "size: {} bytes", meta.len());
+            meta
+        }
+        Err(e) => {
+            let _ = writeln!(out, "exists: false");
+            let _ = writeln!(out, "binary validation: FAILED — {}", e);
+            return Err(out);
+        }
+    };
+    if !metadata.is_file() || metadata.len() == 0 {
+        let _ = writeln!(
+            out,
+            "binary validation: FAILED — hook binary is not a non-empty file"
+        );
+        return Err(out);
     }
+    let _ = writeln!(out, "binary validation: ok");
     let path_str = normalize_hook_path(exe.to_string_lossy().into_owned());
     let _ = writeln!(out, "normalized: {}", path_str);
     let _ = writeln!(out, "settings: {:?}", hook_install::settings_path());

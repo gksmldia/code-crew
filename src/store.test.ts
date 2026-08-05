@@ -383,6 +383,61 @@ describe("terminal-answered tool permissions", () => {
     expect(sess.state).toBe("working");
   });
 
+  it("keeps a synthesized Codex permission after its original tool event and deduplicates retries", () => {
+    const { applyEvent } = useStore.getState();
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "codex",
+    });
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "exec",
+      tool_input: "const r = await tools.exec_command({...});",
+      agent_type: "codex",
+    });
+
+    const permission = {
+      kind: "PermissionRequest" as const,
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "exec_command",
+      tool_input: {
+        cmd: "mkdir -p /tmp/x",
+        sandbox_permissions: "require_escalated",
+      },
+      request_id: "codex-call-1",
+      agent_type: "codex" as const,
+    };
+    applyEvent(permission);
+    applyEvent(permission);
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.currentTool).toBe("exec");
+    expect(pendingIds(sess)).toEqual(["codex-call-1"]);
+    expect(sess.messages.filter((m) => m.kind === "permission")).toHaveLength(1);
+    expect(sess.state).toBe("permission");
+
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "custom_tool_call",
+      success: true,
+      agent_type: "codex",
+    });
+    applyEvent({ kind: "PermissionCancel", request_id: "codex-call-1" });
+
+    const completed = useStore.getState().sessions.s1;
+    expect(completed.currentTool).toBeUndefined();
+    expect(pendingIds(completed)).toEqual([]);
+    expect(completed.state).toBe("idle");
+  });
+
   it("keeps unrelated permissions when a different tool starts", () => {
     const { applyEvent } = useStore.getState();
 
