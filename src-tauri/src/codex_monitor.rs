@@ -627,10 +627,14 @@ fn map_codex_line(
             }
         }
         "turn_context" => payload_cwd.map(|cwd| Event::SessionStart {
-            session_id: session_id.to_string(),
+            session_id: routed_session,
             cwd,
             agent_type: "codex".into(),
-            source_pid: session_pid,
+            source_pid: if parent_for_path.is_some() {
+                None
+            } else {
+                session_pid
+            },
             pid_chain: None,
         }),
         "event_msg" => match inner_kind? {
@@ -919,6 +923,60 @@ mod tests {
             }
             _ => panic!("expected SessionStart"),
         }
+    }
+
+    #[test]
+    fn subagent_turn_context_routes_to_parent_without_child_pid() {
+        let path = Path::new("/x/rollout-child.jsonl");
+        let mut pm = HashMap::new();
+        let meta = json!({
+            "type": "session_meta",
+            "payload": {
+                "id": "child-id",
+                "cwd": "/tmp/proj",
+                "source": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": "parent-id",
+                            "agent_role": "explorer"
+                        }
+                    }
+                }
+            }
+        });
+        let turn = json!({
+            "type": "turn_context",
+            "payload": {"cwd": "/tmp/proj"}
+        });
+        let complete = json!({
+            "type": "event_msg",
+            "payload": {"type": "task_complete"}
+        });
+
+        let events = [meta, turn, complete]
+            .iter()
+            .filter_map(|value| {
+                map_codex_line("child-id", path, value, &mut pm, Some(4242))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            &events[0],
+            Event::SubagentStart { session_id, .. } if session_id == "parent-id"
+        ));
+        assert!(matches!(
+            &events[1],
+            Event::SessionStart {
+                session_id,
+                source_pid: None,
+                ..
+            } if session_id == "parent-id"
+        ));
+        assert!(matches!(
+            &events[2],
+            Event::SubagentStop { session_id, .. } if session_id == "parent-id"
+        ));
     }
 
     #[test]
