@@ -504,44 +504,83 @@ fn focus_app(app_name: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::collections::{HashMap, HashSet};
         use win_focus::*;
+
         let pattern = app_name.to_lowercase();
         focus_log(&format!("focus_app windows: searching pattern={:?}", pattern));
-        let mut search = AppSearch { pattern, hwnd: 0 };
-        unsafe {
-            EnumWindows(find_app_proc, &mut search as *mut AppSearch as isize);
-        }
-        if search.hwnd == 0 {
-            // Dump all visible windows so we can find the correct search term.
-            let mut lines: Vec<String> = Vec::new();
-            unsafe extern "system" fn dump_all(hwnd: isize, lp: isize) -> i32 {
-                if win_focus::IsWindowVisible(hwnd) == 0 { return 1; }
-                let title = win_focus::hwnd_title(hwnd);
-                if title.is_empty() { return 1; }
-                let mut pid: u32 = 0;
-                win_focus::GetWindowThreadProcessId(hwnd, &mut pid);
-                (*(lp as *mut Vec<String>)).push(format!("pid={} {:?}", pid, title));
-                1
+
+        // Step 1: find by window title (fast path — works when the app has its own window)
+        let mut search = AppSearch { pattern: pattern.clone(), hwnd: 0 };
+        unsafe { EnumWindows(find_app_proc, &mut search as *mut AppSearch as isize); }
+
+        let hwnd = if search.hwnd != 0 {
+            focus_log(&format!("focus_app windows: title match hwnd=0x{:x}", search.hwnd));
+            Some(search.hwnd)
+        } else {
+            // Step 2: app has no own window (runs inside IntelliJ/VS Code/terminal).
+            // Find a process whose exe/name contains the pattern, walk up to its
+            // GUI host (IntelliJ, VS Code, Windows Terminal, …) and focus that.
+            focus_log("focus_app windows: no title match, trying process-based lookup");
+            'find: {
+                use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+                let mut sys = System::new();
+                sys.refresh_processes_specifics(
+                    ProcessesToUpdate::All,
+                    true,
+                    ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+                );
+                let app_pid = sys.processes().values()
+                    .find(|p| {
+                        let by_exe = p.exe()
+                            .and_then(|e| e.file_stem())
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_lowercase().contains(pattern.as_str()))
+                            .unwrap_or(false);
+                        let by_name = p.name().to_lowercase().contains(pattern.as_str());
+                        by_exe || by_name
+                    })
+                    .map(|p| p.pid().as_u32());
+                let Some(start_pid) = app_pid else {
+                    focus_log("focus_app windows: no matching process found");
+                    break 'find None;
+                };
+                focus_log(&format!("focus_app windows: found process pid={}", start_pid));
+                let parent_of = |pid: u32| -> Option<u32> {
+                    let ppid = sys.process(Pid::from_u32(pid))?.parent()?.as_u32();
+                    if ppid == 0 || ppid == pid { None } else { Some(ppid) }
+                };
+                let mut chain = vec![start_pid];
+                let mut cur = start_pid;
+                for _ in 0..8 {
+                    if let Some(ppid) = parent_of(cur) { chain.push(ppid); cur = ppid; } else { break; }
+                }
+                focus_log(&format!("focus_app windows: chain={:?}", chain));
+                let mut data = CollectData {
+                    pids: chain.iter().copied().collect::<HashSet<_>>(),
+                    windows: HashMap::new(),
+                };
+                unsafe { EnumWindows(collect_windows_proc, &mut data as *mut CollectData as isize); }
+                let result = chain.iter().find_map(|pid| data.windows.get(pid)?.first().map(|(h, _)| *h));
+                if result.is_none() { focus_log("focus_app windows: process chain has no GUI window"); }
+                result
             }
-            unsafe { win_focus::EnumWindows(dump_all, &mut lines as *mut Vec<String> as isize); }
-            focus_log(&format!("focus_app no match for {:?} — {} visible windows:", search.pattern, lines.len()));
-            for l in &lines { focus_log(&format!("  {}", l)); }
-            return Ok(());
-        }
-        focus_log(&format!("focus_app windows: raising hwnd=0x{:x}", search.hwnd));
-        unsafe {
-            if IsIconic(search.hwnd) != 0 {
-                ShowWindow(search.hwnd, 9);
-            }
-            let fg_hwnd = GetForegroundWindow();
-            let fg_tid = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
-            let tgt_tid = GetWindowThreadProcessId(search.hwnd, std::ptr::null_mut());
-            if fg_tid != 0 && fg_tid != tgt_tid {
-                AttachThreadInput(tgt_tid, fg_tid, 1);
-                SetForegroundWindow(search.hwnd);
-                AttachThreadInput(tgt_tid, fg_tid, 0);
-            } else {
-                SetForegroundWindow(search.hwnd);
+        };
+
+        if let Some(h) = hwnd {
+            focus_log(&format!("focus_app windows: raising hwnd=0x{:x}", h));
+            unsafe {
+                if IsIconic(h) != 0 { ShowWindow(h, 9); }
+                let fg = GetForegroundWindow();
+                let fg_tid = GetWindowThreadProcessId(fg, std::ptr::null_mut());
+                let tgt_tid = GetWindowThreadProcessId(h, std::ptr::null_mut());
+                if fg_tid != 0 && fg_tid != tgt_tid {
+                    AttachThreadInput(tgt_tid, fg_tid, 1);
+                    SetForegroundWindow(h);
+                    AttachThreadInput(tgt_tid, fg_tid, 0);
+                } else {
+                    SetForegroundWindow(h);
+                }
             }
         }
         return Ok(());
