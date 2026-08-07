@@ -524,7 +524,7 @@ fn focus_app(app_name: String) -> Result<(), String> {
                 1
             }
             unsafe { win_focus::EnumWindows(dump_all, &mut lines as *mut Vec<String> as isize); }
-            focus_log(&format!("focus_app no match for {:?} — {} visible windows:", pattern, lines.len()));
+            focus_log(&format!("focus_app no match for {:?} — {} visible windows:", search.pattern, lines.len()));
             for l in &lines { focus_log(&format!("  {}", l)); }
             return Ok(());
         }
