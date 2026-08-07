@@ -422,6 +422,13 @@ end tell"#,
             EnumWindows(collect_windows_proc, &mut data as *mut CollectData as isize);
         }
 
+        // Log all collected windows for diagnosis.
+        for (pid, wins) in &data.windows {
+            for (hwnd, title) in wins {
+                focus_log(&format!("  pid={} hwnd=0x{:x} title={:?}", pid, hwnd, title));
+            }
+        }
+
         // Extract cwd folder name for window-title matching. VS Code and
         // IntelliJ show the workspace folder in their title bar, letting us
         // pick the correct window when the shared ptyHost PID is the same
@@ -431,6 +438,7 @@ end tell"#,
             let i = c.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
             c[i..].to_lowercase()
         });
+        focus_log(&format!("  matching folder={:?}", folder));
 
         // Try PIDs in chain order. For each PID prefer the window whose title
         // contains the project folder; fall back to the topmost (Z-order first).
@@ -504,7 +512,20 @@ fn focus_app(app_name: String) -> Result<(), String> {
             EnumWindows(find_app_proc, &mut search as *mut AppSearch as isize);
         }
         if search.hwnd == 0 {
-            focus_log("focus_app windows: no matching window");
+            // Dump all visible windows so we can find the correct search term.
+            let mut lines: Vec<String> = Vec::new();
+            unsafe extern "system" fn dump_all(hwnd: isize, lp: isize) -> i32 {
+                if win_focus::IsWindowVisible(hwnd) == 0 { return 1; }
+                let title = win_focus::hwnd_title(hwnd);
+                if title.is_empty() { return 1; }
+                let mut pid: u32 = 0;
+                win_focus::GetWindowThreadProcessId(hwnd, &mut pid);
+                (*(lp as *mut Vec<String>)).push(format!("pid={} {:?}", pid, title));
+                1
+            }
+            unsafe { win_focus::EnumWindows(dump_all, &mut lines as *mut Vec<String> as isize); }
+            focus_log(&format!("focus_app no match for {:?} — {} visible windows:", pattern, lines.len()));
+            for l in &lines { focus_log(&format!("  {}", l)); }
             return Ok(());
         }
         focus_log(&format!("focus_app windows: raising hwnd=0x{:x}", search.hwnd));
