@@ -67,6 +67,9 @@ const GUI_HOSTS: &[&str] = &[
     "code-insiders",
 ];
 
+#[cfg(unix)]
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "ksh", "tcsh", "csh"];
+
 /// Look up `comm` (executable basename) for a PID via `ps`.
 #[cfg(unix)]
 fn comm_of(pid: u32) -> Option<String> {
@@ -86,6 +89,15 @@ fn comm_of(pid: u32) -> Option<String> {
                 .unwrap_or(s),
         )
     }
+}
+
+#[cfg(unix)]
+fn is_shell(pid: u32) -> bool {
+    let Some(comm) = comm_of(pid) else {
+        return false;
+    };
+    let name = comm.trim_start_matches('-').to_lowercase();
+    SHELLS.iter().any(|shell| name == *shell)
 }
 
 /// Pick the PID in the chain whose `comm` best identifies the host GUI app
@@ -117,6 +129,8 @@ fn pick_source_pid(chain: &[u32]) -> Option<u32> {
 fn enrich_with_pid_info(buf: &str) -> String {
     let ppid = parent_id();
     let chain = pid_chain(ppid, 8);
+    let first_non_shell = chain.iter().position(|&p| !is_shell(p)).unwrap_or(0);
+    let chain = chain[first_non_shell..].to_vec();
     let source = pick_source_pid(&chain).unwrap_or(ppid);
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(buf) else {
         return buf.to_string();

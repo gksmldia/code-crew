@@ -23,6 +23,16 @@ pub enum Event {
     UserPromptSubmit {
         session_id: String,
         cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid_chain: Option<Vec<u32>>,
+        /// main transcript 경로. 도구 호출 전에도 idle sweep이 transcript
+        /// 활동(사고 중/중단됨)을 판정할 수 있도록 첫 프롬프트부터 전달한다.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_path: Option<String>,
     },
     PreToolUse {
         session_id: String,
@@ -35,6 +45,8 @@ pub enum Event {
         /// `None` for the main agent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +61,12 @@ pub enum Event {
         transcript_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid_chain: Option<Vec<u32>>,
     },
     SubagentStart {
         session_id: String,
@@ -77,6 +95,12 @@ pub enum Event {
         /// concurrent requests are queued.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid_chain: Option<Vec<u32>>,
     },
     PermissionCancel {
         request_id: String,
@@ -84,11 +108,23 @@ pub enum Event {
     Stop {
         session_id: String,
         cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid_chain: Option<Vec<u32>>,
     },
     Notification {
         session_id: String,
         cwd: Option<String>,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid_chain: Option<Vec<u32>>,
     },
 }
 
@@ -137,6 +173,10 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
         "UserPromptSubmit" => Event::UserPromptSubmit {
             session_id: sid,
             cwd: cwd_opt,
+            agent_type: Some(agent_type.to_string()),
+            source_pid: raw.source_pid,
+            pid_chain: raw.pid_chain.clone(),
+            transcript_path: raw.transcript_path.clone(),
         },
         "PreToolUse" => Event::PreToolUse {
             session_id: sid,
@@ -145,6 +185,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             tool_input: raw.tool_input.unwrap_or(Value::Null),
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
+            agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
         },
@@ -162,6 +203,9 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
                 .unwrap_or(true),
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
+            agent_type: Some(agent_type.to_string()),
+            source_pid: raw.source_pid,
+            pid_chain: raw.pid_chain.clone(),
         },
         // PostToolUseFailure is structurally the same as PostToolUse but
         // signals a failed tool call. We collapse it into the existing
@@ -174,6 +218,9 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             success: false,
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
+            agent_type: Some(agent_type.to_string()),
+            source_pid: raw.source_pid,
+            pid_chain: raw.pid_chain.clone(),
         },
         "SubagentStart" => {
             // Claude Code surfaces the subagent's display name as `agent_type`
@@ -225,12 +272,24 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             request_id: request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             suggestions: raw.permission_suggestions.unwrap_or(Value::Null),
             agent_name: raw.agent_type.clone(),
+            agent_type: Some(agent_type.to_string()),
+            source_pid: raw.source_pid,
+            pid_chain: raw.pid_chain.clone(),
         },
-        "Stop" => Event::Stop { session_id: sid, cwd: cwd_opt },
+        "Stop" => Event::Stop {
+            session_id: sid,
+            cwd: cwd_opt,
+            agent_type: Some(agent_type.to_string()),
+            source_pid: raw.source_pid,
+            pid_chain: raw.pid_chain.clone(),
+        },
         "Notification" => Event::Notification {
             session_id: sid,
             cwd: cwd_opt,
             message: raw.message.unwrap_or_default(),
+            agent_type: Some(agent_type.to_string()),
+            source_pid: raw.source_pid,
+            pid_chain: raw.pid_chain.clone(),
         },
         _ => return None,
     })
@@ -349,6 +408,49 @@ mod tests {
                 assert!(!success, "PostToolUseFailure must set success=false");
             }
             _ => panic!("PostToolUseFailure should map to Event::PostToolUse"),
+        }
+    }
+
+    #[test]
+    fn card_events_carry_pid_info() {
+        for name in ["Notification", "Stop", "PostToolUse", "UserPromptSubmit"] {
+            let mut r = raw(name, "s8");
+            r.source_pid = Some(1234);
+            r.pid_chain = Some(vec![1234, 5678]);
+            if name == "Notification" {
+                r.message = Some("done".into());
+            }
+            if name == "PostToolUse" {
+                r.tool_name = Some("Bash".into());
+            }
+
+            let e = from_raw(r, "claude", None).unwrap();
+            match e {
+                Event::Notification {
+                    source_pid,
+                    pid_chain,
+                    ..
+                }
+                | Event::Stop {
+                    source_pid,
+                    pid_chain,
+                    ..
+                }
+                | Event::PostToolUse {
+                    source_pid,
+                    pid_chain,
+                    ..
+                }
+                | Event::UserPromptSubmit {
+                    source_pid,
+                    pid_chain,
+                    ..
+                } => {
+                    assert_eq!(source_pid, Some(1234));
+                    assert_eq!(pid_chain, Some(vec![1234, 5678]));
+                }
+                _ => panic!("wrong variant for {name}"),
+            }
         }
     }
 

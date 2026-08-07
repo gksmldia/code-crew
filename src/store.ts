@@ -14,7 +14,7 @@ interface Store {
   sessions: Record<string, Session>;
   sessionOrder: string[];
   applyEvent: (ev: Event) => void;
-  setIdle: (sessionId: string) => void;
+  setIdle: (sessionId: string, force?: boolean) => void;
   acknowledgePermission: (sessionId: string, requestId: string) => void;
   addRestoredMessages: (sessionId: string, msgs: Message[]) => void;
   setProjectKey: (sessionId: string, key: string) => void;
@@ -81,9 +81,14 @@ function ensureSession(s: Record<string, Session>, order: string[], sid: string,
   return s[sid];
 }
 
-function withCwd(cwd?: string | null): Partial<Session> | undefined {
-  if (!cwd) return undefined;
-  return { cwd, displayName: lastSegment(cwd) };
+function withEventDefaults(cwd?: string | null, agentType?: Session["agentType"] | null): Partial<Session> | undefined {
+  const defaults: Partial<Session> = {};
+  if (cwd) {
+    defaults.cwd = cwd;
+    defaults.displayName = lastSegment(cwd);
+  }
+  if (agentType) defaults.agentType = agentType;
+  return Object.keys(defaults).length > 0 ? defaults : undefined;
 }
 
 function pushMessage(session: Session, msg: Message) {
@@ -111,6 +116,36 @@ function markCodex(sess: Session) {
   if (sess.agentType !== "codex") sess.agentType = "codex";
 }
 
+function isAskUserQuestion(permission: PendingPermission): boolean {
+  return permission.toolName === "AskUserQuestion";
+}
+
+function removeResolvedPermission(session: Session, toolName: string, agentName: string) {
+  const idx = session.pendingPermissions.findIndex((p) => {
+    const pendingAgent = p.agentName && p.agentName.length > 0 ? p.agentName : "main";
+    return p.toolName === toolName && pendingAgent === agentName;
+  });
+  if (idx >= 0) session.pendingPermissions.splice(idx, 1);
+}
+
+// AskUserQuestion has no "answered" hook: Claude Code never fires a PostToolUse
+// we can match when the user picks an option in the TUI, and the turn's Stop
+// can be many tool calls away. But the asking agent is *blocked* until it's
+// answered — so the moment that same agent does any other work, the question
+// is provably answered. Drop its stale banner then instead of leaving it up
+// until Stop (which is what made the prompt linger while Claude kept working).
+function clearAnsweredQuestions(session: Session, agentName: string) {
+  session.pendingPermissions = session.pendingPermissions.filter((p) => {
+    const pendingAgent = p.agentName && p.agentName.length > 0 ? p.agentName : "main";
+    return !(isAskUserQuestion(p) && pendingAgent === agentName);
+  });
+}
+
+function isTerminalApiError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("session limit") || lower.includes("rate limit");
+}
+
 export const useStore = create<Store>((set) => ({
   sessions: {},
   sessionOrder: [],
@@ -121,6 +156,20 @@ export const useStore = create<Store>((set) => ({
       const order = [...state.sessionOrder];
       switch (ev.kind) {
         case "SessionStart": {
+          // /clear는 SessionEnd hook을 발화하지 않는다(claude-code#6428).
+          // 한 claude 프로세스는 동시에 한 세션만 호스팅하므로, 같은 프로세스
+          // (pidChain[0])에서 새 SessionStart가 오면 그 프로세스의 이전 세션은
+          // 종료된 것으로 간주하고 카드를 제거한다. (/clear·/resume 커버)
+          const newHead = ev.pid_chain?.[0];
+          if (newHead != null) {
+            for (const sid of Object.keys(s)) {
+              if (sid !== ev.session_id && s[sid].pidChain?.[0] === newHead) {
+                delete s[sid];
+                const oi = order.indexOf(sid);
+                if (oi >= 0) order.splice(oi, 1);
+              }
+            }
+          }
           const existed = Boolean(s[ev.session_id]);
           const sess = ensureSession(s, order, ev.session_id, {
             agentType: ev.agent_type,
@@ -146,14 +195,20 @@ export const useStore = create<Store>((set) => ({
           // (see hook.rs::permission long-poll). Pending requests must
           // only leave the queue via acknowledgePermission or
           // PermissionCancel.
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
+          // UserPromptSubmit은 항상 main 에이전트 소속 — 도구 호출 전에도
+          // idle sweep이 transcript 활동을 확인할 수 있게 경로를 확보한다.
+          if (ev.transcript_path && !sess.mainTranscriptPath) {
+            sess.mainTranscriptPath = ev.transcript_path;
+          }
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
           sess.lastSeen = Date.now();
           break;
         }
         case "PreToolUse": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
-          sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           sess.currentTool = ev.tool_name;
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
@@ -199,6 +254,16 @@ export const useStore = create<Store>((set) => ({
             : tp && sess.subagentByPath[tp]
               ? sess.subagentByPath[tp].shortName
               : "main";
+          removeResolvedPermission(sess, ev.tool_name, agentLabel);
+          // Any *other* tool from this agent means a question it had pending was
+          // already answered (it couldn't have proceeded otherwise).
+          if (ev.tool_name !== "AskUserQuestion") {
+            clearAnsweredQuestions(sess, agentLabel);
+          } else {
+            // 뒤따르는 PermissionRequest는 agent 정보 없이 오므로 실제 질문 주체를 저장
+            sess.lastAskAgent = agentLabel;
+          }
+          sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
 
           const tm = messageFromTool(ev.tool_name, (ev.tool_input as Record<string, unknown>) ?? {});
           const msg: Message = {
@@ -217,7 +282,9 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "PostToolUse": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           // Same rationale as UserPromptSubmit/PreToolUse: don't blow away
           // sibling subagents' pending permissions just because *this*
           // tool finished. Each request leaves the queue only when its
@@ -230,8 +297,10 @@ export const useStore = create<Store>((set) => ({
             : tp && sess.subagentByPath[tp]
               ? sess.subagentByPath[tp].shortName
               : "main";
+          removeResolvedPermission(sess, ev.tool_name, agentLabel);
+          if (ev.tool_name !== "AskUserQuestion") clearAnsweredQuestions(sess, agentLabel);
           if (!ev.success) {
-            sess.state = "error";
+            sess.state = sess.pendingPermissions.length > 0 ? "permission" : "error";
             const msg: Message = {
               id: crypto.randomUUID(),
               agentName: agentLabel,
@@ -245,13 +314,13 @@ export const useStore = create<Store>((set) => ({
             pushMessage(sess, msg);
             void persistMessage(sess, msg);
           } else {
-            sess.state = "working";
+            sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
           }
           sess.lastSeen = Date.now();
           break;
         }
         case "SubagentStart": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, undefined));
           const tp = ev.transcript_path ?? undefined;
           if (ev.subagent_id.startsWith("codex-") || isCodexTranscriptPath(tp)) markCodex(sess);
           // If we already mapped this transcript_path, reuse the same shortName
@@ -276,18 +345,29 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "SubagentStop": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, undefined));
           if (ev.subagent_id.startsWith("codex-")) markCodex(sess);
           sess.subagents = sess.subagents.filter((sa) => sa.id !== ev.subagent_id);
+          if (sess.subagents.length === 0 && sess.state === "working" && !sess.currentTool) {
+            sess.justFinishedAt = Date.now();
+            sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
+            sess.currentTool = undefined;
+            sess.lastSeen = Date.now();
+          }
           break;
         }
         case "PermissionRequest": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           if (ev.request_id.startsWith("codex-")) markCodex(sess);
           sess.state = "permission";
           const agentLabel = ev.agent_name && ev.agent_name.length > 0
             ? shortNameOf(ev.agent_name)
-            : "main";
+            : ev.tool_name === "AskUserQuestion" && sess.lastAskAgent
+              ? sess.lastAskAgent
+              : "main";
+          if (ev.tool_name === "AskUserQuestion") sess.lastAskAgent = undefined; // 재사용 방지
           const pp: PendingPermission = {
             requestId: ev.request_id,
             toolName: ev.tool_name,
@@ -298,21 +378,22 @@ export const useStore = create<Store>((set) => ({
           // Append rather than overwrite — multiple subagents can have
           // open requests at once and the widget renders one PermissionInline
           // per entry. Dedup by request_id so a retry doesn't double-add.
-          if (!sess.pendingPermissions.some((p) => p.requestId === pp.requestId)) {
+          const isNewRequest = !sess.pendingPermissions.some((p) => p.requestId === pp.requestId);
+          if (isNewRequest) {
             sess.pendingPermissions.push(pp);
+            const msg: Message = {
+              id: crypto.randomUUID(),
+              agentName: agentLabel,
+              pet: petForAgent(agentLabel),
+              toolEmoji: "⚠️",
+              toolName: ev.tool_name,
+              text: `${ev.tool_name} 실행 허용?`,
+              kind: "permission",
+              timestamp: Date.now(),
+            };
+            pushMessage(sess, msg);
+            void persistMessage(sess, msg);
           }
-          const msg: Message = {
-            id: crypto.randomUUID(),
-            agentName: agentLabel,
-            pet: petForAgent(agentLabel),
-            toolEmoji: "⚠️",
-            toolName: ev.tool_name,
-            text: `${ev.tool_name} 실행 허용?`,
-            kind: "permission",
-            timestamp: Date.now(),
-          };
-          pushMessage(sess, msg);
-          void persistMessage(sess, msg);
           break;
         }
         case "PermissionCancel": {
@@ -332,14 +413,24 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "Stop": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           if (sess.state === "working" || sess.state === "error") {
             sess.justFinishedAt = Date.now();
           }
-          // Pending permissions outlive a Stop — their hook processes are
-          // still parked on /permission and need a widget answer or a
-          // PermissionCancel to unblock. Reflect that in the state so the
-          // card keeps showing the inline UI.
+          // Stop은 턴 전체가 끝났다는 뜻 — main 에이전트의 권한 요청이
+          // 미응답이면 턴이 여기까지 올 수 없으므로, 남아있는 main 요청은
+          // 네이티브 UI(VSCode 확장 등)에서 이미 응답된 좀비다. 배너를
+          // 걷어낸다. 좀비 hook은 서버 600초 타임아웃으로 자연 정리된다.
+          // 서브에이전트 요청은 main Stop과 동시에 살아있을 수 있으므로
+          // 유지하고(hook이 여전히 위젯 응답 대기 중), Codex는 JSONL 폴링
+          // 순서상 Stop이 승인 요청과 뒤섞일 수 있어 제외한다.
+          sess.pendingPermissions = sess.pendingPermissions.filter((p) => {
+            if (isAskUserQuestion(p)) return false;
+            if (sess.agentType !== "codex" && p.agentName === "main") return false;
+            return true;
+          });
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
           sess.currentTool = undefined;
           sess.lastSeen = Date.now();
@@ -354,7 +445,9 @@ export const useStore = create<Store>((set) => ({
           break;
         }
         case "Notification": {
-          const sess = ensureSession(s, order, ev.session_id, withCwd(ev.cwd));
+          const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
+          if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
+          if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
           const msg: Message = {
             id: crypto.randomUUID(),
             agentName: "main",
@@ -365,18 +458,29 @@ export const useStore = create<Store>((set) => ({
           };
           pushMessage(sess, msg);
           void persistMessage(sess, msg);
+          if (isTerminalApiError(ev.message)) {
+            if (sess.state === "working" || sess.state === "error") {
+              sess.justFinishedAt = Date.now();
+            }
+            sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
+            sess.currentTool = undefined;
+            sess.lastSeen = Date.now();
+          } else if (sess.agentType === "codex" && sess.pendingPermissions.length === 0) {
+            sess.state = "working";
+            sess.lastSeen = Date.now();
+          }
           break;
         }
       }
       return { sessions: s, sessionOrder: order };
     }),
 
-  setIdle: (sessionId) =>
+  setIdle: (sessionId, force = false) =>
     set((state) => {
       const sess = state.sessions[sessionId];
       if (!sess) return state;
       const since = Date.now() - sess.lastSeen;
-      if (since < IDLE_DELAY_MS) return state;
+      if (!force && since < IDLE_DELAY_MS) return state;
       return {
         sessions: { ...state.sessions, [sessionId]: { ...sess, state: "idle", currentTool: undefined } },
       };

@@ -4,6 +4,7 @@ pub mod hook_install;
 pub mod project_key;
 pub mod server;
 pub mod storage;
+pub mod transcript;
 
 use server::{AppState, PermissionDecision};
 use std::collections::HashMap;
@@ -18,9 +19,9 @@ const HOOK_BINARY_NAME: &str = "code-crew-hook";
 
 fn normalize_hook_path(s: String) -> String {
     // Tauri returns Windows resource paths in verbatim form (`\\?\C:\…`).
-    // Claude Code runs hook commands through bash, which can't resolve the
-    // verbatim prefix and consumes backslashes inside double-quoted strings
-    // as escapes. Forward slashes under Git Bash avoid both problems.
+    // Hook registration uses Claude Code's exec form, so the executable path
+    // is passed as one value without shell parsing. Strip the verbatim prefix
+    // and keep a stable forward-slash form that Windows accepts directly.
     #[cfg(target_os = "windows")]
     {
         let stripped = s.strip_prefix(r"\\?\").unwrap_or(&s);
@@ -138,10 +139,32 @@ fn install_hooks_report(
     use std::fmt::Write;
     let mut out = String::new();
     let _ = writeln!(out, "binary name: {}", HOOK_BINARY_NAME);
-    let exe = match app
-        .path()
-        .resolve(HOOK_BINARY_NAME, tauri::path::BaseDirectory::Resource)
+    // macOS: the hook ships next to the main exe as a Cargo [[bin]] output
+    // (Contents/MacOS/), where the bundler preserves the exec bit. Earlier we
+    // resolved via BaseDirectory::Resource, which silently dropped the +x and
+    // every hook call EACCES'd. Windows still uses Resource because the NSIS
+    // bundler doesn't place secondary [[bin]] outputs next to the main exe,
+    // and Windows has no unix exec bit to lose.
+    let resolved: Result<std::path::PathBuf, String>;
+    #[cfg(target_os = "macos")]
     {
+        let _ = app;
+        resolved = std::env::current_exe()
+            .map_err(|e| format!("current_exe failed: {}", e))
+            .and_then(|p| {
+                p.parent()
+                    .map(|d| d.join(HOOK_BINARY_NAME))
+                    .ok_or_else(|| "current_exe has no parent".to_string())
+            });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        resolved = app
+            .path()
+            .resolve(HOOK_BINARY_NAME, tauri::path::BaseDirectory::Resource)
+            .map_err(|e| e.to_string());
+    }
+    let exe = match resolved {
         Ok(p) => {
             let _ = writeln!(out, "resolve: ok\nresolved: {}", p.display());
             p
@@ -151,10 +174,26 @@ fn install_hooks_report(
             return Err(out);
         }
     };
-    let _ = writeln!(out, "exists: {}", exe.exists());
-    if let Ok(meta) = std::fs::metadata(&exe) {
-        let _ = writeln!(out, "size: {} bytes", meta.len());
+    let metadata = match std::fs::metadata(&exe) {
+        Ok(meta) => {
+            let _ = writeln!(out, "exists: true");
+            let _ = writeln!(out, "size: {} bytes", meta.len());
+            meta
+        }
+        Err(e) => {
+            let _ = writeln!(out, "exists: false");
+            let _ = writeln!(out, "binary validation: FAILED — {}", e);
+            return Err(out);
+        }
+    };
+    if !metadata.is_file() || metadata.len() == 0 {
+        let _ = writeln!(
+            out,
+            "binary validation: FAILED — hook binary is not a non-empty file"
+        );
+        return Err(out);
     }
+    let _ = writeln!(out, "binary validation: ok");
     let path_str = normalize_hook_path(exe.to_string_lossy().into_owned());
     let _ = writeln!(out, "normalized: {}", path_str);
     let _ = writeln!(out, "settings: {:?}", hook_install::settings_path());
@@ -381,6 +420,13 @@ fn is_process_alive(pid: u32) -> bool {
     process_alive(pid)
 }
 
+/// idle sweep이 working 세션의 transcript 활동을 판정할 때 사용.
+/// 사고(Musing) 구간엔 hook 이벤트가 없어 mtime·중단 마커로 보완한다.
+#[tauri::command]
+fn transcript_status(path: String) -> transcript::TranscriptStatus {
+    transcript::status(std::path::Path::new(&path))
+}
+
 #[cfg(target_os = "windows")]
 fn process_alive(pid: u32) -> bool {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -450,6 +496,7 @@ pub fn run() {
             focus_pid,
             focus_app,
             is_process_alive,
+            transcript_status,
         ])
         // Intercept window close so the app survives any code path that
         // calls `getCurrentWindow().close()` (header × button, devtools,
