@@ -644,6 +644,7 @@ fn map_codex_line(
                 agent_type: Some("codex".into()),
                 source_pid: None,
                 pid_chain: None,
+                transcript_path: None,
             }),
             "task_complete" | "turn_aborted" => {
                 if parent_for_path.is_some() {
@@ -707,6 +708,7 @@ fn map_codex_line(
                     agent_type: Some("codex".into()),
                     source_pid: None,
                     pid_chain: None,
+                    transcript_path: None,
                 });
             }
             if is_tool_call(inner_kind) {

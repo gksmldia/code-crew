@@ -156,6 +156,20 @@ export const useStore = create<Store>((set) => ({
       const order = [...state.sessionOrder];
       switch (ev.kind) {
         case "SessionStart": {
+          // /clear는 SessionEnd hook을 발화하지 않는다(claude-code#6428).
+          // 한 claude 프로세스는 동시에 한 세션만 호스팅하므로, 같은 프로세스
+          // (pidChain[0])에서 새 SessionStart가 오면 그 프로세스의 이전 세션은
+          // 종료된 것으로 간주하고 카드를 제거한다. (/clear·/resume 커버)
+          const newHead = ev.pid_chain?.[0];
+          if (newHead != null) {
+            for (const sid of Object.keys(s)) {
+              if (sid !== ev.session_id && s[sid].pidChain?.[0] === newHead) {
+                delete s[sid];
+                const oi = order.indexOf(sid);
+                if (oi >= 0) order.splice(oi, 1);
+              }
+            }
+          }
           const existed = Boolean(s[ev.session_id]);
           const sess = ensureSession(s, order, ev.session_id, {
             agentType: ev.agent_type,
@@ -184,6 +198,11 @@ export const useStore = create<Store>((set) => ({
           const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
+          // UserPromptSubmit은 항상 main 에이전트 소속 — 도구 호출 전에도
+          // idle sweep이 transcript 활동을 확인할 수 있게 경로를 확보한다.
+          if (ev.transcript_path && !sess.mainTranscriptPath) {
+            sess.mainTranscriptPath = ev.transcript_path;
+          }
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
           sess.lastSeen = Date.now();
           break;
@@ -400,13 +419,18 @@ export const useStore = create<Store>((set) => ({
           if (sess.state === "working" || sess.state === "error") {
             sess.justFinishedAt = Date.now();
           }
-          sess.pendingPermissions = sess.pendingPermissions.filter((p) => !isAskUserQuestion(p));
-          // Pending permissions outlive a Stop — their hook processes are
-          // still parked on /permission and need a widget answer or a
-          // PermissionCancel to unblock. Reflect that in the state so the
-          // card keeps showing the inline UI. AskUserQuestion is different:
-          // once Stop arrives, the terminal-side question has been answered
-          // and there is no permission hook left for the widget to resolve.
+          // Stop은 턴 전체가 끝났다는 뜻 — main 에이전트의 권한 요청이
+          // 미응답이면 턴이 여기까지 올 수 없으므로, 남아있는 main 요청은
+          // 네이티브 UI(VSCode 확장 등)에서 이미 응답된 좀비다. 배너를
+          // 걷어낸다. 좀비 hook은 서버 600초 타임아웃으로 자연 정리된다.
+          // 서브에이전트 요청은 main Stop과 동시에 살아있을 수 있으므로
+          // 유지하고(hook이 여전히 위젯 응답 대기 중), Codex는 JSONL 폴링
+          // 순서상 Stop이 승인 요청과 뒤섞일 수 있어 제외한다.
+          sess.pendingPermissions = sess.pendingPermissions.filter((p) => {
+            if (isAskUserQuestion(p)) return false;
+            if (sess.agentType !== "codex" && p.agentName === "main") return false;
+            return true;
+          });
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
           sess.currentTool = undefined;
           sess.lastSeen = Date.now();

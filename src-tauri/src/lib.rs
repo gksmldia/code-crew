@@ -4,6 +4,7 @@ pub mod hook_install;
 pub mod project_key;
 pub mod server;
 pub mod storage;
+pub mod transcript;
 
 use server::{AppState, PermissionDecision};
 use std::collections::HashMap;
@@ -384,6 +385,13 @@ fn is_process_alive(pid: u32) -> bool {
     process_alive(pid)
 }
 
+/// idle sweep이 working 세션의 transcript 활동을 판정할 때 사용.
+/// 사고(Musing) 구간엔 hook 이벤트가 없어 mtime·중단 마커로 보완한다.
+#[tauri::command]
+fn transcript_status(path: String) -> transcript::TranscriptStatus {
+    transcript::status(std::path::Path::new(&path))
+}
+
 #[cfg(target_os = "windows")]
 fn process_alive(pid: u32) -> bool {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -453,6 +461,7 @@ pub fn run() {
             focus_pid,
             focus_app,
             is_process_alive,
+            transcript_status,
         ])
         // Intercept window close so the app survives any code path that
         // calls `getCurrentWindow().close()` (header × button, devtools,

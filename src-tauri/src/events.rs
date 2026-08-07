@@ -29,6 +29,10 @@ pub enum Event {
         source_pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid_chain: Option<Vec<u32>>,
+        /// main transcript 경로. 도구 호출 전에도 idle sweep이 transcript
+        /// 활동(사고 중/중단됨)을 판정할 수 있도록 첫 프롬프트부터 전달한다.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_path: Option<String>,
     },
     PreToolUse {
         session_id: String,
@@ -172,6 +176,7 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             agent_type: Some(agent_type.to_string()),
             source_pid: raw.source_pid,
             pid_chain: raw.pid_chain.clone(),
+            transcript_path: raw.transcript_path.clone(),
         },
         "PreToolUse" => Event::PreToolUse {
             session_id: sid,

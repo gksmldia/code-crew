@@ -196,34 +196,9 @@ describe("terminal-answered questions", () => {
     expect(sess.state).toBe("idle");
   });
 
-  it("keeps real permission prompts open when the turn stops", () => {
-    const { applyEvent } = useStore.getState();
-
-    applyEvent({
-      kind: "SessionStart",
-      session_id: "s1",
-      cwd: "/tmp/proj",
-      agent_type: "claude",
-    });
-    applyEvent({
-      kind: "PermissionRequest",
-      session_id: "s1",
-      cwd: "/tmp/proj",
-      tool_name: "Bash",
-      tool_input: { command: "npm test" },
-      request_id: "perm-1",
-    });
-
-    applyEvent({
-      kind: "Stop",
-      session_id: "s1",
-      cwd: "/tmp/proj",
-    });
-
-    const sess = useStore.getState().sessions.s1;
-    expect(pendingIds(sess)).toContain("perm-1");
-    expect(sess.state).toBe("permission");
-  });
+  // NOTE: "main 권한 배너는 Stop을 넘겨 유지" 스펙은 폐기됨 — main 요청이
+  // 미응답이면 턴이 끝날 수 없으므로, Stop 시 정리한다. 새 스펙 테스트는
+  // "Stop clears zombie main permissions answered in the native UI" 참고.
 
   it("clears a stale AskUserQuestion banner when the agent runs the next tool", () => {
     // The user answers in the TUI and Claude keeps working mid-turn. There is
@@ -671,3 +646,179 @@ function pendingIds(sess: unknown): string[] {
   }
   return pp.pendingPermission ? [pp.pendingPermission.requestId] : [];
 }
+
+// /clear는 SessionEnd를 발화하지 않으므로(claude-code#6428) 같은 claude
+// 프로세스(pidChain[0])의 새 SessionStart가 이전 세션 카드를 대체해야 한다.
+describe("SessionStart supersedes stale sessions from the same process", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("removes the previous session sharing pidChain[0]", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "old",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+      pid_chain: [111, 222],
+    });
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "new",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+      pid_chain: [111, 222],
+    });
+
+    const st = useStore.getState();
+    expect(st.sessions.old).toBeUndefined();
+    expect(st.sessions.new).toBeDefined();
+    expect(st.sessionOrder).toEqual(["new"]);
+  });
+
+  it("keeps sessions from other processes or without pid info", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "other",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+      pid_chain: [999, 222],
+    });
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "nopid",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "new",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+      pid_chain: [111, 222],
+    });
+
+    const st = useStore.getState();
+    expect(st.sessions.other).toBeDefined();
+    expect(st.sessions.nopid).toBeDefined();
+    expect(st.sessions.new).toBeDefined();
+    expect(st.sessionOrder).toHaveLength(3);
+  });
+});
+
+// 네이티브 UI(VSCode 확장 등)에서 응답된 권한은 code-crew에 신호가 오지
+// 않는다. main 에이전트는 권한이 미응답이면 턴이 끝날 수 없으므로, Stop
+// 도착 시 남아있는 main 요청은 좀비로 보고 걷어낸다.
+describe("Stop clears zombie main permissions answered in the native UI", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("drops main pending permissions on Stop for claude sessions", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "WebSearch",
+      tool_input: {},
+      request_id: "r1",
+    });
+    expect(pendingIds(useStore.getState().sessions.s1)).toEqual(["r1"]);
+
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.pendingPermissions).toHaveLength(0);
+    expect(sess.state).toBe("idle");
+  });
+
+  it("keeps subagent pending permissions across a main Stop", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: { command: "echo hi" },
+      request_id: "r-sub",
+      agent_name: "alpha",
+    });
+
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(pendingIds(sess)).toEqual(["r-sub"]);
+    expect(sess.state).toBe("permission");
+  });
+
+  it("keeps codex main pending permissions on Stop", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "c1",
+      cwd: "/tmp/proj",
+      agent_type: "codex",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "c1",
+      cwd: "/tmp/proj",
+      tool_name: "shell_command",
+      tool_input: {},
+      request_id: "codex-r1",
+    });
+
+    applyEvent({ kind: "Stop", session_id: "c1", cwd: "/tmp/proj", agent_type: "codex" });
+
+    expect(pendingIds(useStore.getState().sessions.c1)).toEqual(["codex-r1"]);
+  });
+});
+
+describe("UserPromptSubmit transcript path capture", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("stores mainTranscriptPath from the first prompt, before any tool use", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "UserPromptSubmit",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      transcript_path: "/tmp/t.jsonl",
+    });
+    expect(useStore.getState().sessions.s1.mainTranscriptPath).toBe("/tmp/t.jsonl");
+  });
+
+  it("does not overwrite an already-known main transcript path", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "UserPromptSubmit",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      transcript_path: "/tmp/first.jsonl",
+    });
+    applyEvent({
+      kind: "UserPromptSubmit",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      transcript_path: "/tmp/second.jsonl",
+    });
+    expect(useStore.getState().sessions.s1.mainTranscriptPath).toBe("/tmp/first.jsonl");
+  });
+});
