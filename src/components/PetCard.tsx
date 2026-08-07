@@ -118,7 +118,7 @@ export function PetCard({ session }: PetCardProps) {
       void invoke("focus_app", { appName: "Codex" }).catch(() => undefined);
     };
     if (chain.length > 0) {
-      void invoke("focus_pid", { pidChain: chain }).catch(() => {
+      void invoke("focus_pid", { pidChain: chain, cwd: session.cwd || null }).catch(() => {
         if (session.agentType === "codex") focusCodexApp();
       });
       return;

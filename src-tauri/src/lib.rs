@@ -262,8 +262,8 @@ fn derive_display_name(cwd: String) -> Result<String, String> {
     Ok(project_key::display_name(std::path::Path::new(&cwd)))
 }
 
-/// Windows Win32 API FFI — used by focus_pid to raise a window directly from
-/// the Tauri process (which already holds foreground permission after the click)
+/// Windows Win32 API FFI — used by focus_pid/focus_app to raise windows directly
+/// from the Tauri process (which holds foreground permission after the click)
 /// without spawning PowerShell. Spawning powershell.exe + Add-Type JIT takes
 /// 1-3 s, long past the ~200 ms Windows foreground-lock window.
 #[cfg(target_os = "windows")]
@@ -281,16 +281,23 @@ mod win_focus {
         pub fn GetForegroundWindow() -> isize;
         pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
         pub fn IsIconic(hWnd: isize) -> i32;
+        pub fn GetWindowTextW(hWnd: isize, lpString: *mut u16, nMaxCount: i32) -> i32;
+    }
+
+    pub unsafe fn hwnd_title(hwnd: isize) -> String {
+        let mut buf = [0u16; 512];
+        let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        if len > 0 { String::from_utf16_lossy(&buf[..len as usize]) } else { String::new() }
     }
 
     pub struct CollectData {
         pub pids: std::collections::HashSet<u32>,
-        pub windows: std::collections::HashMap<u32, isize>,
+        /// pid → windows in Z-order (topmost first), each with title.
+        /// Collecting ALL windows per PID lets us pick the correct one by
+        /// title when a process owns multiple windows (VS Code, IntelliJ).
+        pub windows: std::collections::HashMap<u32, Vec<(isize, String)>>,
     }
 
-    /// EnumWindows callback — collects the first visible top-level window for
-    /// each PID we care about. EnumWindows iterates in Z-order (frontmost
-    /// first), so the first hit per PID is the most-recently-active window.
     pub unsafe extern "system" fn collect_windows_proc(hwnd: isize, lparam: isize) -> i32 {
         if IsWindowVisible(hwnd) == 0 {
             return 1;
@@ -298,10 +305,32 @@ mod win_focus {
         let data = &mut *(lparam as *mut CollectData);
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, &mut pid);
-        if data.pids.contains(&pid) && !data.windows.contains_key(&pid) {
-            data.windows.insert(pid, hwnd);
+        if data.pids.contains(&pid) {
+            data.windows.entry(pid).or_default().push((hwnd, hwnd_title(hwnd)));
         }
-        1 // always continue — collect all PIDs before stopping
+        1
+    }
+
+    /// EnumWindows callback for focus_app: first visible window whose title
+    /// (lowercased) contains the search pattern.
+    pub struct AppSearch {
+        pub pattern: String,
+        pub hwnd: isize,
+    }
+
+    pub unsafe extern "system" fn find_app_proc(hwnd: isize, lparam: isize) -> i32 {
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let s = &mut *(lparam as *mut AppSearch);
+        if s.hwnd != 0 {
+            return 0;
+        }
+        if hwnd_title(hwnd).to_lowercase().contains(s.pattern.as_str()) {
+            s.hwnd = hwnd;
+            return 0;
+        }
+        1
     }
 }
 
@@ -329,7 +358,7 @@ fn focus_log(msg: &str) {
 /// activate the process with that `unix id`. Walks the chain in `pid_chain`
 /// in order so an inner Helper PID falls back to its outer GUI app.
 #[tauri::command]
-fn focus_pid(pid_chain: Vec<u32>) -> Result<(), String> {
+fn focus_pid(pid_chain: Vec<u32>, cwd: Option<String>) -> Result<(), String> {
     focus_log(&format!("focus_pid chain={:?}", pid_chain));
     if pid_chain.is_empty() {
         return Err("empty pid chain".into());
@@ -382,7 +411,7 @@ end tell"#,
         use std::collections::{HashMap, HashSet};
         use win_focus::*;
 
-        focus_log(&format!("focus_pid windows: chain={:?}", pid_chain));
+        focus_log(&format!("focus_pid windows: chain={:?} cwd={:?}", pid_chain, cwd));
 
         let mut data = CollectData {
             pids: pid_chain.iter().copied().collect::<HashSet<_>>(),
@@ -393,10 +422,27 @@ end tell"#,
             EnumWindows(collect_windows_proc, &mut data as *mut CollectData as isize);
         }
 
-        // Try PIDs in pid_chain order so the innermost real process (e.g.
-        // node.exe) is checked first, falling through to the outer GUI host
-        // (Code.exe, WindowsTerminal.exe, …) that actually owns a window.
-        let hwnd = pid_chain.iter().find_map(|pid| data.windows.get(pid).copied());
+        // Extract cwd folder name for window-title matching. VS Code and
+        // IntelliJ show the workspace folder in their title bar, letting us
+        // pick the correct window when the shared ptyHost PID is the same
+        // across all windows of the same IDE instance.
+        let folder = cwd.as_deref().map(|c| {
+            let c = c.trim_end_matches(['/', '\\']);
+            let i = c.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
+            c[i..].to_lowercase()
+        });
+
+        // Try PIDs in chain order. For each PID prefer the window whose title
+        // contains the project folder; fall back to the topmost (Z-order first).
+        let hwnd = pid_chain.iter().find_map(|pid| {
+            let wins = data.windows.get(pid)?;
+            if let Some(ref f) = folder {
+                if let Some((hwnd, _)) = wins.iter().find(|(_, t)| t.to_lowercase().contains(f.as_str())) {
+                    return Some(*hwnd);
+                }
+            }
+            wins.first().map(|(hwnd, _)| *hwnd)
+        });
 
         let Some(hwnd) = hwnd else {
             focus_log("focus_pid windows: no matching window found");
@@ -406,14 +452,9 @@ end tell"#,
         focus_log(&format!("focus_pid windows: raising hwnd=0x{:x}", hwnd));
 
         unsafe {
-            // Restore if minimised.
             if IsIconic(hwnd) != 0 {
                 ShowWindow(hwnd, 9); // SW_RESTORE
             }
-            // AttachThreadInput lets the target window's thread inherit
-            // foreground permission from the current foreground thread
-            // (Tauri, which owns focus right after the user's double-click).
-            // Without this, SetForegroundWindow only flashes the taskbar.
             let fg_hwnd = GetForegroundWindow();
             let fg_tid = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
             let tgt_tid = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
@@ -455,17 +496,33 @@ fn focus_app(app_name: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        let safe_name = app_name.replace('\'', "");
-        let script = format!(
-            "$p = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*{safe_name}*' }} | Select-Object -First 1; \
-             if ($p) {{ \
-               Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class WU {{ [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); }}' -ErrorAction SilentlyContinue; \
-               [WU]::SetForegroundWindow($p.MainWindowHandle) | Out-Null \
-             }}"
-        );
-        let _ = std::process::Command::new("powershell")
-            .args(["-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
-            .spawn();
+        use win_focus::*;
+        let pattern = app_name.to_lowercase();
+        focus_log(&format!("focus_app windows: searching pattern={:?}", pattern));
+        let mut search = AppSearch { pattern, hwnd: 0 };
+        unsafe {
+            EnumWindows(find_app_proc, &mut search as *mut AppSearch as isize);
+        }
+        if search.hwnd == 0 {
+            focus_log("focus_app windows: no matching window");
+            return Ok(());
+        }
+        focus_log(&format!("focus_app windows: raising hwnd=0x{:x}", search.hwnd));
+        unsafe {
+            if IsIconic(search.hwnd) != 0 {
+                ShowWindow(search.hwnd, 9);
+            }
+            let fg_hwnd = GetForegroundWindow();
+            let fg_tid = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
+            let tgt_tid = GetWindowThreadProcessId(search.hwnd, std::ptr::null_mut());
+            if fg_tid != 0 && fg_tid != tgt_tid {
+                AttachThreadInput(tgt_tid, fg_tid, 1);
+                SetForegroundWindow(search.hwnd);
+                AttachThreadInput(tgt_tid, fg_tid, 0);
+            } else {
+                SetForegroundWindow(search.hwnd);
+            }
+        }
         return Ok(());
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
