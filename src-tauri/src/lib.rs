@@ -537,7 +537,7 @@ fn focus_app(app_name: String) -> Result<(), String> {
                             .and_then(|s| s.to_str())
                             .map(|s| s.to_lowercase().contains(pattern.as_str()))
                             .unwrap_or(false);
-                        let by_name = p.name().to_lowercase().contains(pattern.as_str());
+                        let by_name = p.name().to_string_lossy().to_lowercase().contains(pattern.as_str());
                         by_exe || by_name
                     })
                     .map(|p| p.pid().as_u32());
