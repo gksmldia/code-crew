@@ -148,6 +148,7 @@ fn enrich_with_pid_info(buf: &str) -> String {
 #[cfg(windows)]
 const GUI_HOSTS_WIN: &[&str] = &[
     "code", "cursor", "windsurf", "vscodium", "code - insiders",
+    "windowsterminal", "wt",
 ];
 #[cfg(windows)]
 const SHELLS_WIN: &[&str] = &["bash", "sh", "cmd", "conhost", "powershell", "pwsh"];

@@ -262,15 +262,63 @@ fn derive_display_name(cwd: String) -> Result<String, String> {
     Ok(project_key::display_name(std::path::Path::new(&cwd)))
 }
 
+/// Windows Win32 API FFI — used by focus_pid to raise a window directly from
+/// the Tauri process (which already holds foreground permission after the click)
+/// without spawning PowerShell. Spawning powershell.exe + Add-Type JIT takes
+/// 1-3 s, long past the ~200 ms Windows foreground-lock window.
+#[cfg(target_os = "windows")]
+mod win_focus {
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn EnumWindows(
+            lpEnumFunc: unsafe extern "system" fn(isize, isize) -> i32,
+            lParam: isize,
+        ) -> i32;
+        pub fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32;
+        pub fn IsWindowVisible(hWnd: isize) -> i32;
+        pub fn SetForegroundWindow(hWnd: isize) -> i32;
+        pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        pub fn GetForegroundWindow() -> isize;
+        pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
+        pub fn IsIconic(hWnd: isize) -> i32;
+    }
+
+    pub struct CollectData {
+        pub pids: std::collections::HashSet<u32>,
+        pub windows: std::collections::HashMap<u32, isize>,
+    }
+
+    /// EnumWindows callback — collects the first visible top-level window for
+    /// each PID we care about. EnumWindows iterates in Z-order (frontmost
+    /// first), so the first hit per PID is the most-recently-active window.
+    pub unsafe extern "system" fn collect_windows_proc(hwnd: isize, lparam: isize) -> i32 {
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let data = &mut *(lparam as *mut CollectData);
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if data.pids.contains(&pid) && !data.windows.contains_key(&pid) {
+            data.windows.insert(pid, hwnd);
+        }
+        1 // always continue — collect all PIDs before stopping
+    }
+}
+
 /// Debug-trace `focus_pid`/`focus_app` calls into a flat log so we can see,
-/// in release builds, whether a double-click reached Rust and what osascript
+/// in release builds, whether a double-click reached Rust and what the OS
 /// returned. Best-effort — silent on I/O failure.
 fn focus_log(msg: &str) {
     use std::io::Write;
+    let path = if cfg!(target_os = "windows") {
+        std::env::temp_dir().join("code-crew-focus.log")
+    } else {
+        std::path::PathBuf::from("/tmp/code-crew-focus.log")
+    };
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("/tmp/code-crew-focus.log")
+        .open(path)
     {
         let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S%.3f"), msg);
     }
@@ -331,38 +379,53 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        let pids_ps = pid_chain
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let script = format!(
-            "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; \
-             public class WU {{ \
-               [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); \
-               [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int n); \
-             }}' -ErrorAction SilentlyContinue; \
-             foreach ($id in @({pids})) {{ \
-               $p = Get-Process -Id $id -ErrorAction SilentlyContinue; \
-               if ($p -and $p.MainWindowHandle -ne 0) {{ \
-                 [WU]::ShowWindow($p.MainWindowHandle, 9) | Out-Null; \
-                 [WU]::SetForegroundWindow($p.MainWindowHandle) | Out-Null; \
-                 exit 0 \
-               }} \
-             }}; exit 1",
-            pids = pids_ps
-        );
-        focus_log(&format!("focus_pid windows pids={}", pids_ps));
-        let out = std::process::Command::new("powershell")
-            .args(["-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
-            .output()
-            .map_err(|e| e.to_string())?;
-        focus_log(&format!("  → status={}", out.status));
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err("no focusable window found in pid chain".into())
+        use std::collections::{HashMap, HashSet};
+        use win_focus::*;
+
+        focus_log(&format!("focus_pid windows: chain={:?}", pid_chain));
+
+        let mut data = CollectData {
+            pids: pid_chain.iter().copied().collect::<HashSet<_>>(),
+            windows: HashMap::new(),
+        };
+
+        unsafe {
+            EnumWindows(collect_windows_proc, &mut data as *mut CollectData as isize);
         }
+
+        // Try PIDs in pid_chain order so the innermost real process (e.g.
+        // node.exe) is checked first, falling through to the outer GUI host
+        // (Code.exe, WindowsTerminal.exe, …) that actually owns a window.
+        let hwnd = pid_chain.iter().find_map(|pid| data.windows.get(pid).copied());
+
+        let Some(hwnd) = hwnd else {
+            focus_log("focus_pid windows: no matching window found");
+            return Err("no focusable window found in pid chain".into());
+        };
+
+        focus_log(&format!("focus_pid windows: raising hwnd=0x{:x}", hwnd));
+
+        unsafe {
+            // Restore if minimised.
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, 9); // SW_RESTORE
+            }
+            // AttachThreadInput lets the target window's thread inherit
+            // foreground permission from the current foreground thread
+            // (Tauri, which owns focus right after the user's double-click).
+            // Without this, SetForegroundWindow only flashes the taskbar.
+            let fg_hwnd = GetForegroundWindow();
+            let fg_tid = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
+            let tgt_tid = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            if fg_tid != 0 && fg_tid != tgt_tid {
+                AttachThreadInput(tgt_tid, fg_tid, 1);
+                SetForegroundWindow(hwnd);
+                AttachThreadInput(tgt_tid, fg_tid, 0);
+            } else {
+                SetForegroundWindow(hwnd);
+            }
+        }
+        Ok(())
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
