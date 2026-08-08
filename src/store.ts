@@ -146,6 +146,24 @@ function isTerminalApiError(message: string): boolean {
   return lower.includes("session limit") || lower.includes("rate limit");
 }
 
+function normalizeCwd(cwd: string): string {
+  const slashed = cwd.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  if (!slashed) return "";
+  if (/^[a-z]:\/$/i.test(slashed)) return slashed.toLowerCase();
+  const normalized = slashed === "/" ? slashed : slashed.replace(/\/+$/, "");
+  // Windows paths are case-insensitive; preserve POSIX case sensitivity.
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function isReplaceableIdleCodexSession(session: Session, incomingCwd: string): boolean {
+  return session.agentType === "codex"
+    && normalizeCwd(session.cwd) === incomingCwd
+    && session.state === "idle"
+    && session.pendingPermissions.length === 0
+    && session.subagents.length === 0
+    && !session.currentTool;
+}
+
 export const useStore = create<Store>((set) => ({
   sessions: {},
   sessionOrder: [],
@@ -156,12 +174,13 @@ export const useStore = create<Store>((set) => ({
       const order = [...state.sessionOrder];
       switch (ev.kind) {
         case "SessionStart": {
+          const existed = Boolean(s[ev.session_id]);
           // /clear는 SessionEnd hook을 발화하지 않는다(claude-code#6428).
           // 한 claude 프로세스는 동시에 한 세션만 호스팅하므로, 같은 프로세스
           // (pidChain[0])에서 새 SessionStart가 오면 그 프로세스의 이전 세션은
           // 종료된 것으로 간주하고 카드를 제거한다. (/clear·/resume 커버)
           const newHead = ev.pid_chain?.[0];
-          if (newHead != null) {
+          if (ev.agent_type === "claude" && newHead != null) {
             for (const sid of Object.keys(s)) {
               if (sid !== ev.session_id && s[sid].pidChain?.[0] === newHead) {
                 delete s[sid];
@@ -170,12 +189,33 @@ export const useStore = create<Store>((set) => ({
               }
             }
           }
-          const existed = Boolean(s[ev.session_id]);
+          // Codex는 새 rollout마다 새 session_id를 보내므로 PID가 아니라 cwd와
+          // 안전한 idle 상태를 기준으로 바로 전 카드를 대체한다. 작업·권한·도구·
+          // 서브에이전트가 남아 있는 카드는 독립 세션으로 유지한다.
+          let replacementIndex: number | undefined;
+          if (!existed && ev.agent_type === "codex") {
+            const incomingCwd = normalizeCwd(ev.cwd);
+            const replacementIds = incomingCwd
+              ? order.filter((sid) => sid !== ev.session_id && isReplaceableIdleCodexSession(s[sid], incomingCwd))
+              : [];
+            if (replacementIds.length > 0) {
+              replacementIndex = order.indexOf(replacementIds[0]);
+              for (const sid of replacementIds) delete s[sid];
+              for (let index = order.length - 1; index >= 0; index -= 1) {
+                if (replacementIds.includes(order[index])) order.splice(index, 1);
+              }
+            }
+          }
           const sess = ensureSession(s, order, ev.session_id, {
             agentType: ev.agent_type,
             cwd: ev.cwd,
             displayName: lastSegment(ev.cwd),
           });
+          if (replacementIndex !== undefined) {
+            const appendedIndex = order.indexOf(ev.session_id);
+            order.splice(appendedIndex, 1);
+            order.splice(replacementIndex, 0, ev.session_id);
+          }
           if (!existed) sess.state = "idle";
           sess.lastSeen = Date.now();
           if (ev.source_pid != null) sess.sourcePid = ev.source_pid;

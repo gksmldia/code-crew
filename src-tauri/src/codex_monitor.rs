@@ -169,15 +169,36 @@ fn last_task_event_is_complete(items: &[Value]) -> bool {
 
 fn pid_holding_file(path: &Path) -> Option<u32> {
     let path_str = path.to_str()?;
+    // -F pc: PID와 명령 이름을 함께 받아 codex 프로세스를 골라내기 위함.
     let output = std::process::Command::new("lsof")
-        .args(["-t", path_str])
+        .args(["-F", "pc", path_str])
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines().next()?.trim().parse().ok()
+    pick_session_pid(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// rollout 파일은 codex 외의 도구(인덱서·백업 등)도 함께 열고 있을 수 있고,
+/// lsof 출력 순서는 codex를 앞세워 주지 않는다. 명령 이름이 codex인 항목을
+/// 우선 고른다. 엉뚱한 PID를 잡으면 카드 더블클릭이 세션의 창을 찾지 못한다.
+fn pick_session_pid(lsof_output: &str) -> Option<u32> {
+    let mut first: Option<u32> = None;
+    let mut current: Option<u32> = None;
+    for line in lsof_output.lines() {
+        if let Some(pid) = line.strip_prefix('p') {
+            current = pid.trim().parse().ok();
+            if first.is_none() {
+                first = current;
+            }
+        } else if let Some(command) = line.strip_prefix('c') {
+            if command.trim().to_ascii_lowercase().contains("codex") {
+                return current;
+            }
+        }
+    }
+    first
 }
 
 fn collect_output_call_ids(items: &[Value]) -> std::collections::HashSet<String> {
@@ -993,6 +1014,20 @@ mod tests {
             Event::SessionStart { source_pid, .. } => assert_eq!(source_pid, Some(4242)),
             _ => panic!("expected SessionStart"),
         }
+    }
+
+    // 실제 `lsof -F pc <rollout>` 출력. 첫 항목이 codex가 아니라 파일을 함께
+    // 열고 있던 bun이라, 첫 줄을 그대로 쓰면 세션과 무관한 PID를 잡는다.
+    #[test]
+    fn picks_codex_pid_over_unrelated_holder() {
+        let real_output = "p1977\ncbun\nf590\np4063\nccodex\nf69\n";
+        assert_eq!(pick_session_pid(real_output), Some(4063));
+    }
+
+    #[test]
+    fn falls_back_to_first_pid_when_no_codex_holder() {
+        assert_eq!(pick_session_pid("p1977\ncbun\nf590\n"), Some(1977));
+        assert_eq!(pick_session_pid(""), None);
     }
 
     #[test]

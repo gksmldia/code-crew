@@ -677,6 +677,37 @@ describe("SessionStart supersedes stale sessions from the same process", () => {
     expect(st.sessionOrder).toEqual(["new"]);
   });
 
+  it("removes a late stale card when SessionStart repeats for an existing Claude session", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "current",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+      pid_chain: [111, 222],
+    });
+    applyEvent({
+      kind: "UserPromptSubmit",
+      session_id: "late-stale",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+      pid_chain: [111, 222],
+    });
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "current",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+      pid_chain: [111, 222],
+    });
+
+    const st = useStore.getState();
+    expect(st.sessions.current).toBeDefined();
+    expect(st.sessions["late-stale"]).toBeUndefined();
+    expect(st.sessionOrder).toEqual(["current"]);
+  });
+
   it("keeps sessions from other processes or without pid info", () => {
     const { applyEvent } = useStore.getState();
     applyEvent({
@@ -705,6 +736,129 @@ describe("SessionStart supersedes stale sessions from the same process", () => {
     expect(st.sessions.nopid).toBeDefined();
     expect(st.sessions.new).toBeDefined();
     expect(st.sessionOrder).toHaveLength(3);
+  });
+});
+
+describe("Codex SessionStart replaces only a safe idle card in the same cwd", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("replaces an idle Codex card at its existing order position after cwd normalization", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "old",
+      cwd: "C:\\Work\\Code-Crew\\",
+      agent_type: "codex",
+    });
+    applyEvent({ kind: "UserPromptSubmit", session_id: "old", cwd: "C:\\Work\\Code-Crew\\", agent_type: "codex" });
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "other-project",
+      cwd: "/tmp/other",
+      agent_type: "codex",
+    });
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "old-later",
+      cwd: "c:/work/code-crew",
+      agent_type: "codex",
+    });
+    applyEvent({ kind: "Stop", session_id: "old", cwd: "C:\\Work\\Code-Crew\\", agent_type: "codex" });
+
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "new",
+      cwd: "c:/work/code-crew",
+      agent_type: "codex",
+    });
+
+    const st = useStore.getState();
+    expect(st.sessions.old).toBeUndefined();
+    expect(st.sessions["old-later"]).toBeUndefined();
+    expect(st.sessions.new).toBeDefined();
+    expect(st.sessionOrder).toEqual(["new", "other-project"]);
+  });
+
+  it("keeps POSIX and Windows root cwd values comparable and non-empty", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({ kind: "SessionStart", session_id: "windows-old", cwd: "C:\\", agent_type: "codex" });
+    applyEvent({ kind: "SessionStart", session_id: "windows-new", cwd: "c:/", agent_type: "codex" });
+    expect(useStore.getState().sessions["windows-old"]).toBeUndefined();
+
+    resetStore();
+    applyEvent({ kind: "SessionStart", session_id: "posix-old", cwd: "/", agent_type: "codex" });
+    applyEvent({ kind: "SessionStart", session_id: "posix-new", cwd: "/", agent_type: "codex" });
+    expect(useStore.getState().sessions["posix-old"]).toBeUndefined();
+  });
+
+  it("keeps same-cwd Codex sessions unless every idle-safety condition is met", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({ kind: "SessionStart", session_id: "working", cwd: "/tmp/proj", agent_type: "codex" });
+    applyEvent({ kind: "UserPromptSubmit", session_id: "working", cwd: "/tmp/proj", agent_type: "codex" });
+    applyEvent({ kind: "SessionStart", session_id: "permission", cwd: "/tmp/proj", agent_type: "codex" });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "permission",
+      cwd: "/tmp/proj",
+      request_id: "codex-permission",
+      tool_name: "Bash",
+      tool_input: {},
+      agent_type: "codex",
+    });
+    applyEvent({ kind: "SessionStart", session_id: "subagent", cwd: "/tmp/proj", agent_type: "codex" });
+    applyEvent({
+      kind: "SubagentStart",
+      session_id: "subagent",
+      cwd: "/tmp/proj",
+      subagent_id: "codex-subagent",
+      subagent_type: "worker",
+    });
+    applyEvent({ kind: "SessionStart", session_id: "tool", cwd: "/tmp/proj", agent_type: "codex" });
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "tool",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: {},
+      agent_type: "codex",
+    });
+
+    // 상태 필드만 idle로 보일 수 있는 순서 문제에도 권한·서브에이전트·도구가
+    // 남아 있으면 대체하지 않아야 한다.
+    useStore.setState((state) => ({
+      sessions: Object.fromEntries(
+        Object.entries(state.sessions).map(([id, session]) => [id, {
+          ...session,
+          state: id === "working" ? session.state : "idle",
+        }]),
+      ),
+    }));
+
+    applyEvent({ kind: "SessionStart", session_id: "new", cwd: "/tmp/proj", agent_type: "codex" });
+
+    const st = useStore.getState();
+    expect(st.sessions.working).toBeDefined();
+    expect(st.sessions.permission).toBeDefined();
+    expect(st.sessions.subagent).toBeDefined();
+    expect(st.sessions.tool).toBeDefined();
+    expect(st.sessions.new).toBeDefined();
+  });
+
+  it("does not remove another card when SessionStart repeats for an existing session_id", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({ kind: "SessionStart", session_id: "first", cwd: "/tmp/proj", agent_type: "codex" });
+    applyEvent({ kind: "UserPromptSubmit", session_id: "first", cwd: "/tmp/proj", agent_type: "codex" });
+    applyEvent({ kind: "SessionStart", session_id: "second", cwd: "/tmp/proj", agent_type: "codex" });
+    applyEvent({ kind: "Stop", session_id: "first", cwd: "/tmp/proj", agent_type: "codex" });
+
+    applyEvent({ kind: "SessionStart", session_id: "first", cwd: "/tmp/proj", agent_type: "codex" });
+
+    const st = useStore.getState();
+    expect(st.sessions.first).toBeDefined();
+    expect(st.sessions.second).toBeDefined();
+    expect(st.sessionOrder).toEqual(["first", "second"]);
   });
 });
 

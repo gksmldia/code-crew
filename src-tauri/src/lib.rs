@@ -33,6 +33,24 @@ fn normalize_hook_path(s: String) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
+const CODEX_BUNDLE_ID: &str = "com.openai.codex";
+
+#[cfg(any(target_os = "macos", test))]
+fn codex_thread_url(session_id: &str) -> Result<String, String> {
+    let is_uuid = session_id.len() == 36
+        && session_id.bytes().enumerate().all(|(idx, byte)| match idx {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        });
+    if !is_uuid {
+        return Err("invalid Codex session id".into());
+    }
+    // session_id is restricted to canonical UUID characters, so it is safe to
+    // interpolate without accepting a different URL path or query.
+    Ok(format!("codex://threads/{session_id}"))
+}
+
 pub struct AppCtx {
     pub state: AppState,
     pub permission_decisions: Arc<Mutex<HashMap<String, PermissionDecision>>>,
@@ -353,16 +371,70 @@ fn focus_log(msg: &str) {
     }
 }
 
+/// 체인의 각 PID에서 부모를 따라 올라가 조상 PID를 뒤에 덧붙인다.
+/// Codex TUI처럼 GUI가 아닌 프로세스 하나만 아는 경우(`lsof`로 찾은 rollout
+/// 보유 PID), 그 세션을 실제로 띄우고 있는 터미널·IDE의 GUI 프로세스까지
+/// 도달해야 창을 포커스할 수 있다. macOS System Events는 GUI 프로세스만
+/// 보이므로 조상까지 올라가지 않으면 항상 no-match가 난다.
+/// 기존 순서를 유지한 채 뒤에만 추가하므로 hook이 준 Claude 체인은 그대로다.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn expand_pid_chain(pid_chain: &[u32]) -> Vec<u32> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut expanded: Vec<u32> = Vec::new();
+    for &start in pid_chain {
+        let mut cur = start;
+        for _ in 0..16 {
+            if !expanded.contains(&cur) {
+                expanded.push(cur);
+            }
+            let parent = sys
+                .process(Pid::from_u32(cur))
+                .and_then(|p| p.parent())
+                .map(|p| p.as_u32());
+            match parent {
+                // launchd(1)·고아(0)·자기 자신에 닿으면 멈춘다.
+                Some(ppid) if ppid > 1 && ppid != cur => cur = ppid,
+                _ => break,
+            }
+        }
+    }
+    expanded
+}
+
+/// 창 제목 매칭에 쓸 폴더명 후보를 좁은 것부터 반환한다.
+/// VS Code·IntelliJ는 창 제목에 세션의 cwd가 아니라 **워크스페이스 루트**를
+/// 넣는다. 모노레포 하위 폴더에서 띄운 세션은 마지막 폴더명만으로는 못 잡으므로
+/// 상위 폴더까지 후보에 넣는다. 홈·루트 같은 일반적인 이름까지 내려가면
+/// 엉뚱한 창을 잡을 수 있어 2단계로 제한한다.
+#[cfg(any(target_os = "macos", test))]
+fn cwd_folder_candidates(cwd: &str) -> Vec<String> {
+    cwd.split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
+        .rev()
+        .take(2)
+        .map(|segment| segment.to_string())
+        .collect()
+}
+
 /// Bring the OS window owning the given Claude session (identified by its
 /// terminal/IDE PID) to the foreground. On macOS we ask System Events to
 /// activate the process with that `unix id`. Walks the chain in `pid_chain`
 /// in order so an inner Helper PID falls back to its outer GUI app.
 #[tauri::command]
 fn focus_pid(pid_chain: Vec<u32>, cwd: Option<String>) -> Result<(), String> {
-    focus_log(&format!("focus_pid chain={:?}", pid_chain));
+    focus_log(&format!("focus_pid chain={:?} cwd={:?}", pid_chain, cwd));
     if pid_chain.is_empty() {
         return Err("empty pid chain".into());
     }
+    // 비-GUI PID만 온 경우를 위해 조상까지 넓힌다.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let pid_chain = {
+        let expanded = expand_pid_chain(&pid_chain);
+        focus_log(&format!("  expanded chain={:?}", expanded));
+        expanded
+    };
     #[cfg(target_os = "macos")]
     {
         let pid_list = pid_chain
@@ -370,18 +442,46 @@ fn focus_pid(pid_chain: Vec<u32>, cwd: Option<String>) -> Result<(), String> {
             .map(|p| p.to_string())
             .collect::<Vec<_>>()
             .join(", ");
+        // 앱을 전면으로 올린 뒤, 창 제목에 폴더명이 들어간 창을 AXRaise로
+        // 끌어올린다. VS Code 창이 여러 개 열려 있어도 해당 세션의 창이 잡힌다.
+        // 접근성 권한이 없거나 창 목록을 못 읽으면 try로 넘겨 앱 활성화까지는 유지한다.
+        let folder_list = cwd
+            .as_deref()
+            .map(cwd_folder_candidates)
+            .unwrap_or_default()
+            .iter()
+            .map(|folder| format!("\"{}\"", folder.replace(['"', '\\'], "")))
+            .collect::<Vec<_>>()
+            .join(", ");
         let script = format!(
-            r#"tell application "System Events"
+            r#"set folderNames to {{{folders}}}
+tell application "System Events"
     repeat with targetPid in {{{pids}}}
         set pidValue to contents of targetPid
         set pList to every process whose unix id is pidValue
         if (count of pList) > 0 then
-            set frontmost of item 1 of pList to true
+            set targetProc to item 1 of pList
+            set frontmost of targetProc to true
+            try
+                set raised to false
+                repeat with folderName in folderNames
+                    if raised is false then
+                        repeat with w in windows of targetProc
+                            if name of w contains (contents of folderName) then
+                                perform action "AXRaise" of w
+                                set raised to true
+                                exit repeat
+                            end if
+                        end repeat
+                    end if
+                end repeat
+            end try
             return (pidValue as string)
         end if
     end repeat
     return "no-match"
 end tell"#,
+            folders = folder_list,
             pids = pid_list
         );
         let out = std::process::Command::new("osascript")
@@ -495,11 +595,21 @@ fn focus_app(app_name: String) -> Result<(), String> {
             .args(["-e", &script])
             .output()
             .map_err(|e| e.to_string())?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         focus_log(&format!(
-            "  → status={} stderr={:?}",
+            "  → status={} stdout={:?} stderr={:?}",
             out.status,
-            String::from_utf8_lossy(&out.stderr).trim(),
+            stdout,
+            stderr,
         ));
+        if !out.status.success() {
+            return Err(if stderr.is_empty() {
+                format!("osascript failed: {}", out.status)
+            } else {
+                stderr
+            });
+        }
         return Ok(());
     }
     #[cfg(target_os = "windows")]
@@ -592,6 +702,78 @@ fn focus_app(app_name: String) -> Result<(), String> {
     }
 }
 
+/// Best-effort Codex thread focus. The deep link was observed in the local
+/// app bundle but is not part of a documented public contract, so failure
+/// falls back to activating that exact app bundle.
+#[tauri::command]
+fn focus_codex_session(session_id: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let deep_error = match codex_thread_url(&session_id) {
+            Ok(thread_url) => {
+                focus_log(&format!("focus_codex_session url={:?}", thread_url));
+                match std::process::Command::new("open")
+                    .args(["-b", CODEX_BUNDLE_ID, &thread_url])
+                    .output()
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                        focus_log(&format!(
+                            "  → deep-link status={} stdout={:?} stderr={:?}",
+                            output.status, stdout, stderr,
+                        ));
+                        if output.status.success() {
+                            return Ok(());
+                        }
+                        if stderr.is_empty() {
+                            format!("open Codex thread failed: {}", output.status)
+                        } else {
+                            format!("open Codex thread failed: {stderr}")
+                        }
+                    }
+                    Err(error) => format!("open Codex thread failed to start: {error}"),
+                }
+            }
+            Err(error) => {
+                focus_log(&format!("focus_codex_session deep link skipped: {error}"));
+                error
+            }
+        };
+        let fallback = std::process::Command::new("open")
+            .args(["-b", CODEX_BUNDLE_ID])
+            .output();
+        match fallback {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                focus_log(&format!(
+                    "  → bundle-fallback status={} stdout={:?} stderr={:?}",
+                    output.status, stdout, stderr,
+                ));
+                if output.status.success() {
+                    Ok(())
+                } else if stderr.is_empty() {
+                    Err(format!("{deep_error}; open Codex bundle failed: {}", output.status))
+                } else {
+                    Err(format!("{deep_error}; open Codex bundle failed: {stderr}"))
+                }
+            }
+            Err(error) => Err(format!("{deep_error}; open Codex bundle failed to start: {error}")),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = session_id;
+        focus_app("Codex".to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = session_id;
+        Err("focus_codex_session not implemented on this platform".into())
+    }
+}
+
 #[tauri::command]
 fn is_process_alive(pid: u32) -> bool {
     if pid == 0 {
@@ -675,6 +857,7 @@ pub fn run() {
             derive_display_name,
             focus_pid,
             focus_app,
+            focus_codex_session,
             is_process_alive,
             transcript_status,
         ])
@@ -792,4 +975,71 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_thread_url;
+
+    #[test]
+    fn builds_codex_thread_url_for_canonical_uuid() {
+        assert_eq!(
+            codex_thread_url("019fd04b-70c5-7900-a4f7-0347905be8db").as_deref(),
+            Ok("codex://threads/019fd04b-70c5-7900-a4f7-0347905be8db"),
+        );
+    }
+
+    #[test]
+    fn rejects_non_uuid_codex_thread_id() {
+        assert!(codex_thread_url("../not-a-session").is_err());
+    }
+
+    // VS Code 창 제목이 워크스페이스 루트("… — clawd-work")라서, 세션 cwd가
+    // 그 하위 폴더면 상위 후보로 잡혀야 한다.
+    #[test]
+    fn lists_cwd_folder_candidates_narrowest_first() {
+        assert_eq!(
+            super::cwd_folder_candidates("/Users/dorothy/clawd-work/code-crew"),
+            vec!["code-crew", "clawd-work"],
+        );
+        assert_eq!(
+            super::cwd_folder_candidates("/Users/dorothy/clawd-work/code-crew/"),
+            vec!["code-crew", "clawd-work"],
+        );
+        assert_eq!(
+            super::cwd_folder_candidates(r"C:\Work\code-crew\"),
+            vec!["code-crew", "Work"],
+        );
+        assert!(super::cwd_folder_candidates("").is_empty());
+        assert!(super::cwd_folder_candidates("/").is_empty());
+    }
+
+    // Codex 카드는 GUI가 아닌 PID 하나만 들고 있다. 조상까지 넓혀야 창을
+    // 가진 프로세스에 닿는다는 전제를 실제 프로세스 트리로 확인한다.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn expands_pid_chain_up_to_ancestors() {
+        let me = std::process::id();
+        let expanded = super::expand_pid_chain(&[me]);
+        assert_eq!(expanded[0], me, "원래 PID가 맨 앞에 유지돼야 한다");
+        assert!(expanded.len() > 1, "부모까지 올라가야 한다: {expanded:?}");
+        assert!(!expanded.contains(&1), "launchd(1)까지 올라가면 안 된다");
+        let mut sorted = expanded.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), expanded.len(), "중복 PID가 없어야 한다");
+    }
+
+    // 이미 GUI 조상이 들어있는 Claude hook 체인은 순서가 보존돼야 한다.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn keeps_existing_chain_order_when_expanding() {
+        let me = std::process::id();
+        let expanded = super::expand_pid_chain(&[me]);
+        assert!(expanded.len() >= 2);
+        let parent = expanded[1];
+        // [자식, 부모] 를 그대로 주면 앞 두 자리가 유지돼야 한다.
+        let re_expanded = super::expand_pid_chain(&[me, parent]);
+        assert_eq!(&re_expanded[..2], &[me, parent]);
+    }
 }
