@@ -418,15 +418,188 @@ fn cwd_folder_candidates(cwd: &str) -> Vec<String> {
         .collect()
 }
 
+/// 세션이 시작된 창을 세션 ID로 기억해 두는 맵.
+/// PID로는 같은 앱의 창을 구분할 수 없다 — IntelliJ 터미널은 창이 몇 개든
+/// 전부 `idea` 프로세스의 직속 자식이라 체인이 한 PID로 수렴한다. cwd도
+/// 두 세션이 같은 폴더면 똑같은 창을 가리킨다. 그래서 세션이 열린 순간의
+/// 창 자체를 붙잡아 둔다. 앱을 재시작하면 비지만 그때는 카드도 함께
+/// 사라지므로 동작이 어긋나지 않는다.
+#[cfg(target_os = "macos")]
+static SESSION_WINDOWS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, u32>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "macos")]
+fn session_windows() -> &'static std::sync::Mutex<HashMap<String, u32>> {
+    SESSION_WINDOWS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "macos")]
+fn remembered_window(session_id: &str) -> Option<u32> {
+    session_windows().lock().ok()?.get(session_id).copied()
+}
+
+/// JXA(`osascript -l JavaScript`)를 돌린다. 이미 osascript를 쓰고 있으므로
+/// 새 의존성 없이 CoreGraphics 창 목록(창 ID·z-order·bounds)에 닿을 수 있다.
+#[cfg(target_os = "macos")]
+fn run_jxa(script: &str) -> Result<String, String> {
+    let out = std::process::Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", script])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            format!("osascript failed: {}", out.status)
+        } else {
+            err
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// 주어진 GUI 프로세스의 최전면 창 CGWindowID.
+/// onScreenOnly 목록은 z-order(앞→뒤)라 그 프로세스의 첫 일반 창(layer 0)이
+/// 최전면 창이다. 창이 없는 프로세스(셸·헬퍼)면 None이 나오므로 호출부가
+/// 조상 체인을 계속 올라갈 수 있다.
+#[cfg(target_os = "macos")]
+fn capture_frontmost_window_id(gui_pid: u32) -> Option<u32> {
+    // 17 = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+    let script = format!(
+        r#"ObjC.import('CoreGraphics');
+function main() {{
+  var l = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(17, 0)));
+  for (var i = 0; i < l.length; i++) {{
+    var w = l[i], b = w.kCGWindowBounds;
+    if (w.kCGWindowOwnerPID !== {pid} || w.kCGWindowLayer !== 0) continue;
+    if (!b || b.Height < 120 || b.Width < 120) continue;
+    return String(w.kCGWindowNumber);
+  }}
+  return "";
+}}
+main();"#,
+        pid = gui_pid
+    );
+    run_jxa(&script).ok().and_then(|s| s.parse::<u32>().ok())
+}
+
+/// 기억해 둔 창을 직접 끌어올린다.
+/// CGWindowID로 그 창의 현재 위치·크기를 찾고, 같은 위치·크기의 접근성 창을
+/// AXRaise한다. 접근성 API에는 CGWindowID로 창을 찾는 공개 방법이 없어
+/// bounds로 잇는다. 창을 닫았으면 "gone"이 돌아오고 호출부가 폴백한다.
+#[cfg(target_os = "macos")]
+fn raise_window_by_id(window_id: u32) -> Result<String, String> {
+    // 16 = kCGWindowListExcludeDesktopElements. 다른 Space에 있는 창도 찾도록
+    // onScreenOnly는 빼고 조회한다.
+    let script = format!(
+        r#"ObjC.import('CoreGraphics');
+function main() {{
+  var l = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(16, 0)));
+  var t = null;
+  for (var i = 0; i < l.length; i++) {{ if (l[i].kCGWindowNumber === {id}) {{ t = l[i]; break; }} }}
+  if (!t) return "gone";
+  var b = t.kCGWindowBounds;
+  var procs = Application('System Events').processes.whose({{ unixId: t.kCGWindowOwnerPID }})();
+  if (procs.length === 0) return "no-proc";
+  var proc = procs[0], wins = proc.windows(), best = null;
+  for (var j = 0; j < wins.length; j++) {{
+    var p = wins[j].position(), s = wins[j].size();
+    if (Math.abs(p[0] - b.X) <= 2 && Math.abs(p[1] - b.Y) <= 2 &&
+        Math.abs(s[0] - b.Width) <= 2 && Math.abs(s[1] - b.Height) <= 2) {{ best = wins[j]; break; }}
+  }}
+  if (!best) return "no-ax-window";
+  var nm = best.name();
+  best.actions.byName("AXRaise").perform();
+  try {{ proc.frontmost = true; }} catch (e) {{}}
+  return "raised: " + nm;
+}}
+main();"#,
+        id = window_id
+    );
+    let out = run_jxa(&script)?;
+    match out.strip_prefix("raised: ") {
+        Some(name) => Ok(name.to_string()),
+        None => Err(out),
+    }
+}
+
+/// 세션이 열린 창을 기억한다. `pid_chain`은 셸처럼 창이 없는 PID일 수 있으므로
+/// 조상까지 넓힌 뒤 창을 가진 첫 프로세스의 최전면 창을 붙잡는다.
+/// osascript 왕복이 있어 별도 스레드에서 돌린다 — hook 응답을 막으면 Claude
+/// Code 시작이 그만큼 느려진다.
+pub fn remember_session_window(session_id: &str, pid_chain: &[u32]) {
+    #[cfg(target_os = "macos")]
+    {
+        let sid = session_id.to_string();
+        let chain = pid_chain.to_vec();
+        std::thread::spawn(move || {
+            for pid in expand_pid_chain(&chain) {
+                if let Some(window_id) = capture_frontmost_window_id(pid) {
+                    focus_log(&format!(
+                        "remember_session_window sid={sid} pid={pid} window={window_id}"
+                    ));
+                    if let Ok(mut map) = session_windows().lock() {
+                        map.insert(sid, window_id);
+                    }
+                    return;
+                }
+            }
+            focus_log(&format!(
+                "remember_session_window sid={sid} chain={chain:?} → 창을 가진 조상이 없음"
+            ));
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (session_id, pid_chain);
+    }
+}
+
+/// 세션이 끝나면 기억을 지운다. 창 ID는 재사용되므로 남겨두면 나중에 엉뚱한
+/// 창을 올릴 수 있다.
+pub fn forget_session_window(session_id: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(mut map) = session_windows().lock() {
+            map.remove(session_id);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = session_id;
+    }
+}
+
 /// Bring the OS window owning the given Claude session (identified by its
 /// terminal/IDE PID) to the foreground. On macOS we ask System Events to
 /// activate the process with that `unix id`. Walks the chain in `pid_chain`
 /// in order so an inner Helper PID falls back to its outer GUI app.
 #[tauri::command]
-fn focus_pid(pid_chain: Vec<u32>, cwd: Option<String>) -> Result<(), String> {
-    focus_log(&format!("focus_pid chain={:?} cwd={:?}", pid_chain, cwd));
+fn focus_pid(
+    pid_chain: Vec<u32>,
+    cwd: Option<String>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    focus_log(&format!(
+        "focus_pid chain={:?} cwd={:?} sid={:?}",
+        pid_chain, cwd, session_id
+    ));
     if pid_chain.is_empty() {
         return Err("empty pid chain".into());
+    }
+    // 세션이 시작된 창을 기억해 뒀으면 그걸 먼저 쓴다. 같은 앱에 창이 여러 개
+    // 열려 있어도 정확히 그 세션의 창이 올라온다. 창을 닫았거나 앱을 재시작해
+    // 기억이 없으면 아래 cwd 매칭으로 폴백한다.
+    #[cfg(target_os = "macos")]
+    if let Some(window_id) = session_id.as_deref().and_then(remembered_window) {
+        match raise_window_by_id(window_id) {
+            Ok(name) => {
+                focus_log(&format!("  raised window={window_id} name={name:?}"));
+                return Ok(());
+            }
+            Err(reason) => focus_log(&format!(
+                "  window={window_id} 실패({reason}) → cwd 매칭으로 폴백"
+            )),
+        }
     }
     // 비-GUI PID만 온 경우를 위해 조상까지 넓힌다.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1041,5 +1214,32 @@ mod tests {
         // [자식, 부모] 를 그대로 주면 앞 두 자리가 유지돼야 한다.
         let re_expanded = super::expand_pid_chain(&[me, parent]);
         assert_eq!(&re_expanded[..2], &[me, parent]);
+    }
+
+    // 세션→창 기억은 세션 ID로만 구분된다. 같은 앱의 다른 창을 각각 들고
+    // 있어야 하고, 세션이 끝나면 지워져야 한다(창 ID는 재사용되므로 남으면
+    // 나중에 엉뚱한 창을 올린다).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn remembers_and_forgets_window_per_session() {
+        let a = format!("test-a-{}", std::process::id());
+        let b = format!("test-b-{}", std::process::id());
+        {
+            let mut map = super::session_windows().lock().unwrap();
+            map.insert(a.clone(), 111);
+            map.insert(b.clone(), 222);
+        }
+        assert_eq!(super::remembered_window(&a), Some(111));
+        assert_eq!(super::remembered_window(&b), Some(222));
+        assert_eq!(super::remembered_window("test-unknown"), None);
+
+        super::forget_session_window(&a);
+        assert_eq!(super::remembered_window(&a), None, "끝난 세션은 지워진다");
+        assert_eq!(
+            super::remembered_window(&b),
+            Some(222),
+            "다른 세션 기억은 남아야 한다"
+        );
+        super::forget_session_window(&b);
     }
 }

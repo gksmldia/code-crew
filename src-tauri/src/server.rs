@@ -105,6 +105,17 @@ async fn post_event(
     let agent_type = "claude";
     watch_for_terminal_api_error(&raw, s.event_tx.clone());
     if let Some(ev) = from_raw(raw, agent_type, None) {
+        // 세션이 시작된 창을 기억해 둔다. 카드 더블클릭 때 같은 앱의 다른 창과
+        // 헷갈리지 않으려면 cwd가 아니라 창 자체를 붙잡아야 한다.
+        match &ev {
+            Event::SessionStart {
+                session_id,
+                pid_chain: Some(chain),
+                ..
+            } => crate::remember_session_window(session_id, chain),
+            Event::SessionEnd { session_id } => crate::forget_session_window(session_id),
+            _ => {}
+        }
         let _ = s.event_tx.send(ev);
     }
     Ok(Json(serde_json::json!({"ok": true})))

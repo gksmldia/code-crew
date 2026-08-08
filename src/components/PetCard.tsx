@@ -120,9 +120,15 @@ export function PetCard({ session }: PetCardProps) {
       });
     };
     // 세션을 실제로 띄우고 있는 창을 먼저 잡는다. Codex도 rollout을 물고 있는
-    // PID에서 조상 GUI 프로세스(터미널·IDE)까지 백엔드가 훑는다.
+    // PID에서 조상 GUI 프로세스(터미널·IDE)까지 백엔드가 훑는다. sessionId를
+    // 같이 넘기면 백엔드가 기억해 둔 "세션이 시작된 창"을 정확히 올린다 —
+    // 같은 앱에 창이 여러 개 열려 있어도 구분된다.
     if (chain.length > 0) {
-      void invoke("focus_pid", { pidChain: chain, cwd: session.cwd || null }).catch((error) => {
+      void invoke("focus_pid", {
+        pidChain: chain,
+        cwd: session.cwd || null,
+        sessionId: session.sessionId,
+      }).catch((error) => {
         console.error("Session PID focus failed", error);
         // 창을 못 찾은 Codex 세션만 앱 스레드 딥링크로 폴백한다.
         if (session.agentType === "codex") focusCodexSession();

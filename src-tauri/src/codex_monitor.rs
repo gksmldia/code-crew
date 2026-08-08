@@ -72,6 +72,15 @@ fn poll_file(
     let new_slice = &bytes[last as usize..];
     let session_id = derive_session_id(path);
 
+    // 방금 만들어진 rollout일 때만 세션의 창을 기억한다. 앱을 재시작하면 기존
+    // 파일을 전부 "처음 보는 것"으로 취급하는데, 그때 창을 붙잡으면 옛 세션에
+    // 지금 최전면 창이 잘못 붙는다.
+    if let Some(pid) = session_pid {
+        if is_freshly_created(path) {
+            crate::remember_session_window(&session_id, &[pid]);
+        }
+    }
+
     let parsed: Vec<Value> = new_slice
         .split(|b| *b == b'\n')
         .filter(|l| !l.is_empty())
@@ -199,6 +208,26 @@ fn pick_session_pid(lsof_output: &str) -> Option<u32> {
         }
     }
     first
+}
+
+/// 세션의 창을 기억해도 되는 "갓 만들어진" rollout으로 볼 시간 범위.
+/// 폴링 주기가 1.5초라 새 세션은 넉넉히 이 안에 들어오고, 앱 재시작 직후의
+/// 일괄 재스캔에서 걸리는 옛 파일은 확실히 빠진다.
+const FRESH_ROLLOUT_WINDOW: Duration = Duration::from_secs(15);
+
+/// rollout 파일이 방금 생성됐는지. 생성 시각을 못 읽으면 기억하지 않는다
+/// (엉뚱한 창을 붙잡느니 cwd 매칭으로 폴백하는 편이 낫다).
+fn is_freshly_created(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(created) = meta.created() else {
+        return false;
+    };
+    created
+        .elapsed()
+        .map(|age| age < FRESH_ROLLOUT_WINDOW)
+        .unwrap_or(false)
 }
 
 fn collect_output_call_ids(items: &[Value]) -> std::collections::HashSet<String> {
@@ -1028,6 +1057,27 @@ mod tests {
     fn falls_back_to_first_pid_when_no_codex_holder() {
         assert_eq!(pick_session_pid("p1977\ncbun\nf590\n"), Some(1977));
         assert_eq!(pick_session_pid(""), None);
+    }
+
+    // 앱 재시작 직후의 일괄 재스캔에서는 옛 rollout도 "처음 보는 파일"이 된다.
+    // 그때 창을 기억하면 옛 세션에 지금 최전면 창이 잘못 붙으므로, 갓 만들어진
+    // 파일만 통과해야 한다.
+    #[test]
+    fn only_freshly_created_rollout_is_eligible_for_window_capture() {
+        let path = temp_rollout();
+        std::fs::write(&path, b"{}\n").unwrap();
+        assert!(
+            is_freshly_created(&path),
+            "방금 만든 rollout은 새 세션으로 봐야 한다"
+        );
+
+        let missing = path.parent().unwrap().join("rollout-none.jsonl");
+        assert!(
+            !is_freshly_created(&missing),
+            "생성 시각을 못 읽으면 기억하지 않는다"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
