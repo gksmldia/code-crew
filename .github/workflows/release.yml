@@ -90,6 +90,39 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "code-crew-hook.exe smoke test failed with exit code $LASTEXITCODE"
           }
+      - name: Import macOS signing certificate
+        if: matrix.platform == 'macos-latest'
+        env:
+          MACOS_SIGNING_CERT_P12: ${{ secrets.MACOS_SIGNING_CERT_P12 }}
+          MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # 자체 서명 인증서로 서명한다. ad-hoc 서명은 Designated Requirement가
+          # cdhash로 잡혀 빌드마다 값이 바뀌고, 그때마다 사용자의 손쉬운 사용
+          # (Accessibility) 권한이 무효가 된다. 인증서로 서명하면 DR이 leaf
+          # 인증서 해시로 고정돼 업데이트를 해도 권한이 유지된다.
+          keychain="$RUNNER_TEMP/code-crew-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 24)"
+          printf '%s' "$MACOS_SIGNING_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin pass:"$MACOS_SIGNING_CERT_PASSWORD" \
+            -clcerts -nokeys -legacy -out "$RUNNER_TEMP/cert.pem"
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$MACOS_SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
+          # 이게 없으면 codesign이 키를 못 꺼내 승인 창을 띄우려다 실패한다.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | xargs)
+          # 자체 서명이라 신뢰 앵커가 없다. 신뢰시키지 않으면 codesign이
+          # "no identity found"로 인증서를 아예 못 본다.
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
+
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/cert.pem"
+          security find-identity -v -p codesigning "$keychain"
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

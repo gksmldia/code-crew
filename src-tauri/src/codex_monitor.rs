@@ -26,6 +26,9 @@ pub async fn run(tx: UnboundedSender<Event>) {
     // yet seen resolved. Persists across poll batches so a later batch's
     // function_call_output can close the matching card prompt.
     let mut seen_perm: HashSet<String> = HashSet::new();
+    // rollout을 물고 있는 PID. 세션이 살아 있는 동안 재사용하고, 프로세스가
+    // 죽으면 버려서 다시 찾는다.
+    let mut session_pids: HashMap<PathBuf, u32> = HashMap::new();
     loop {
         if let Some(dir) = codex_session_dir() {
             if dir.exists() {
@@ -39,7 +42,14 @@ pub async fn run(tx: UnboundedSender<Event>) {
                         if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
                             continue;
                         }
-                        let _ = poll_file(&path, &mut offsets, &mut parent_map, &mut seen_perm, &tx);
+                        let _ = poll_file(
+                            &path,
+                            &mut offsets,
+                            &mut parent_map,
+                            &mut seen_perm,
+                            &mut session_pids,
+                            &tx,
+                        );
                     }
                 }
             }
@@ -53,6 +63,7 @@ fn poll_file(
     offsets: &mut HashMap<PathBuf, u64>,
     parent_map: &mut HashMap<PathBuf, String>,
     seen_perm: &mut HashSet<String>,
+    session_pids: &mut HashMap<PathBuf, u32>,
     tx: &UnboundedSender<Event>,
 ) -> std::io::Result<()> {
     let bytes = fs::read(path)?;
@@ -64,19 +75,16 @@ fn poll_file(
         offsets.insert(path.to_path_buf(), bytes.len() as u64);
         return Ok(());
     }
-    let session_pid = if !offsets.contains_key(path) {
-        pid_holding_file(path)
-    } else {
-        None
-    };
+    let first_sight = !offsets.contains_key(path);
+    let session_pid = resolve_session_pid(path, session_pids);
     let new_slice = &bytes[last as usize..];
     let session_id = derive_session_id(path);
 
-    // 방금 만들어진 rollout일 때만 세션의 창을 기억한다. 앱을 재시작하면 기존
-    // 파일을 전부 "처음 보는 것"으로 취급하는데, 그때 창을 붙잡으면 옛 세션에
-    // 지금 최전면 창이 잘못 붙는다.
+    // 방금 만들어진 rollout을 처음 봤을 때만 세션의 창을 기억한다. 앱을
+    // 재시작하면 기존 파일을 전부 "처음 보는 것"으로 취급하는데, 그때 창을
+    // 붙잡으면 옛 세션에 지금 최전면 창이 잘못 붙는다.
     if let Some(pid) = session_pid {
-        if is_freshly_created(path) {
+        if first_sight && is_freshly_created(path) {
             crate::remember_session_window(&session_id, &[pid]);
         }
     }
@@ -174,6 +182,23 @@ fn last_task_event_is_complete(items: &[Value]) -> bool {
         .last()
         .map(|kind| kind == "task_complete" || kind == "turn_aborted")
         .unwrap_or(false)
+}
+
+/// 세션을 물고 있는 PID를 캐시와 함께 구한다. 예전에는 rollout을 "처음 본"
+/// 순간에만 찾아서, 앱을 재시작하면 이미 진행 중이던 세션은 끝날 때까지 PID
+/// 없이 남았다(카드 더블클릭이 세션 창 대신 Codex 앱으로 빠졌다). 캐시가 없거나
+/// 그 프로세스가 죽었을 때만 lsof를 돌리므로, 새 바이트가 들어온 세션에서만
+/// 최대 한 번씩 실행된다.
+fn resolve_session_pid(path: &Path, cache: &mut HashMap<PathBuf, u32>) -> Option<u32> {
+    if let Some(pid) = cache.get(path).copied() {
+        if crate::process_alive(pid) {
+            return Some(pid);
+        }
+        cache.remove(path);
+    }
+    let pid = pid_holding_file(path)?;
+    cache.insert(path.to_path_buf(), pid);
+    Some(pid)
 }
 
 fn pid_holding_file(path: &Path) -> Option<u32> {
@@ -1080,6 +1105,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    // 살아 있는 세션의 PID는 캐시에서 그대로 쓴다. lsof는 rollout을 실제로
+    // 물고 있는 프로세스만 찾아내므로, 캐시를 안 믿으면 이 테스트의 파일처럼
+    // 아무도 안 연 rollout은 매번 None이 된다.
+    #[test]
+    fn reuses_cached_pid_while_the_process_is_alive() {
+        let path = temp_rollout();
+        std::fs::write(&path, b"{}\n").unwrap();
+        let mut cache = HashMap::from([(path.clone(), std::process::id())]);
+
+        assert_eq!(
+            resolve_session_pid(&path, &mut cache),
+            Some(std::process::id()),
+            "살아 있는 PID는 lsof를 다시 돌리지 않고 재사용한다"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // 죽은 PID를 계속 들고 있으면 카드 더블클릭이 이미 없는(또는 재사용된)
+    // 프로세스의 창을 노린다. 죽었으면 캐시를 비우고 다시 찾아야 한다.
+    #[test]
+    fn drops_cached_pid_once_the_process_is_gone() {
+        let path = temp_rollout();
+        std::fs::write(&path, b"{}\n").unwrap();
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+        let mut cache = HashMap::from([(path.clone(), dead_pid)]);
+
+        // 아무도 열고 있지 않은 파일이라 재조회 결과는 None이다.
+        assert_eq!(resolve_session_pid(&path, &mut cache), None);
+        assert!(
+            !cache.contains_key(&path),
+            "죽은 PID는 캐시에서 지워져야 다음 폴링에서 다시 찾는다"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn maps_task_complete() {
         let v = json!({"type": "event_msg", "payload": {"type": "task_complete"}});
@@ -1359,6 +1423,17 @@ mod tests {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
+    /// 이벤트 매핑 테스트는 PID 캐시를 공유할 필요가 없어 매번 빈 맵으로 부른다.
+    fn poll(
+        path: &Path,
+        offsets: &mut HashMap<PathBuf, u64>,
+        parent_map: &mut HashMap<PathBuf, String>,
+        seen_perm: &mut HashSet<String>,
+        tx: &UnboundedSender<Event>,
+    ) -> std::io::Result<()> {
+        poll_file(path, offsets, parent_map, seen_perm, &mut HashMap::new(), tx)
+    }
+
     #[test]
     fn same_batch_output_hides_nested_permission_but_keeps_outer_pre_tool_use() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1376,7 +1451,7 @@ mod tests {
             ),
         )
         .unwrap();
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
         let events = drain(&mut rx);
 
         assert!(events.iter().any(
@@ -1404,7 +1479,7 @@ mod tests {
 
         // Batch 1: a nested escalated exec_command — surfaced, no output yet.
         std::fs::write(&path, format!("{}\n", custom_exec_call_line("call_1"))).unwrap();
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
         let b1 = drain(&mut rx);
         assert!(
             b1.iter()
@@ -1429,7 +1504,7 @@ mod tests {
             .unwrap();
         writeln!(f, "{}", custom_exec_output_line("call_1")).unwrap();
         drop(f);
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
         let b2 = drain(&mut rx);
         assert!(
             b2.iter().any(|e| matches!(e, Event::PermissionCancel { request_id } if request_id == "codex-call_1")),
@@ -1473,7 +1548,7 @@ mod tests {
         )
         .unwrap();
 
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
         assert!(
             drain(&mut rx).is_empty(),
             "guardian must not create a session card"
@@ -1494,7 +1569,7 @@ mod tests {
         .unwrap();
         drop(file);
 
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
         assert!(
             drain(&mut rx).is_empty(),
             "guardian updates must stay hidden"
@@ -1540,7 +1615,7 @@ mod tests {
             let _ = map_codex_line(&session_id, &path, v, &mut pm, Some(current_pid));
         }
 
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
 
         assert!(
             drain(&mut rx).is_empty(),
@@ -1583,7 +1658,7 @@ mod tests {
 
         assert!(last_task_event_is_complete(&parsed));
 
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
 
         assert!(
             drain(&mut rx).is_empty(),
@@ -1612,7 +1687,7 @@ mod tests {
         )
         .unwrap();
 
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
 
         assert!(
             drain(&mut rx).iter().any(|e| matches!(e, Event::UserPromptSubmit { .. })),
@@ -1637,7 +1712,7 @@ mod tests {
             format!("{}\n{}\n", escalated_call_line("c9"), output_line("c9")),
         )
         .unwrap();
-        poll_file(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
+        poll(&path, &mut offsets, &mut pm, &mut seen, &tx).unwrap();
         let evs = drain(&mut rx);
         assert!(
             !evs.iter().any(|e| matches!(e, Event::PermissionRequest { .. })),

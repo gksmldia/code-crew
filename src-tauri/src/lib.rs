@@ -617,7 +617,8 @@ fn focus_pid(
             .join(", ");
         // 앱을 전면으로 올린 뒤, 창 제목에 폴더명이 들어간 창을 AXRaise로
         // 끌어올린다. VS Code 창이 여러 개 열려 있어도 해당 세션의 창이 잡힌다.
-        // 접근성 권한이 없거나 창 목록을 못 읽으면 try로 넘겨 앱 활성화까지는 유지한다.
+        // 접근성 권한이 없거나 창 목록을 못 읽어도 앱 활성화까지는 유지하되,
+        // 실패 사유를 그대로 돌려받아 로그에 남긴다.
         let folder_list = cwd
             .as_deref()
             .map(cwd_folder_candidates)
@@ -635,21 +636,26 @@ tell application "System Events"
         if (count of pList) > 0 then
             set targetProc to item 1 of pList
             set frontmost of targetProc to true
+            set raiseResult to "no-window-match"
             try
-                set raised to false
                 repeat with folderName in folderNames
-                    if raised is false then
+                    if raiseResult is "no-window-match" then
                         repeat with w in windows of targetProc
                             if name of w contains (contents of folderName) then
+                                -- AXRaise 뒤에는 창 목록 순서가 바뀌어 w가 다른
+                                -- 창을 가리키므로 이름을 먼저 잡아 둔다.
+                                set winName to name of w
                                 perform action "AXRaise" of w
-                                set raised to true
+                                set raiseResult to "raised " & winName
                                 exit repeat
                             end if
                         end repeat
                     end if
                 end repeat
+            on error errMsg
+                set raiseResult to "error " & errMsg
             end try
-            return (pidValue as string)
+            return (pidValue as string) & " raise=" & raiseResult
         end if
     end repeat
     return "no-match"
@@ -663,9 +669,16 @@ end tell"#,
             .map_err(|e| e.to_string())?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // AXRaise 결과를 따로 남긴다. 예전에는 try가 실패를 통째로 삼켜서 접근성
+        // 권한이 없어도 성공처럼 보였고, "앱은 전환되는데 창은 안 올라온다"의
+        // 원인을 로그만으로는 알 수 없었다.
+        let (matched, raise) = match stdout.split_once(" raise=") {
+            Some((pid, raise)) => (pid, Some(raise)),
+            None => (stdout.as_str(), None),
+        };
         focus_log(&format!(
-            "  → status={} stdout={:?} stderr={:?}",
-            out.status, stdout, stderr,
+            "  → status={} pid={:?} raise={:?} stderr={:?}",
+            out.status, matched, raise, stderr,
         ));
         if !out.status.success() {
             return Err(if stderr.is_empty() {
@@ -674,7 +687,7 @@ end tell"#,
                 stderr
             });
         }
-        if stdout == "no-match" {
+        if matched == "no-match" {
             return Err("no matching process in pid chain".into());
         }
         Ok(())
