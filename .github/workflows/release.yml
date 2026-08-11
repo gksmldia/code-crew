@@ -73,6 +73,13 @@ jobs:
             target/aarch64-apple-darwin/release/code-crew-hook \
             target/x86_64-apple-darwin/release/code-crew-hook
           cp target/universal-apple-darwin/release/code-crew-hook binaries/code-crew-hook
+          # x86_64 바이너리는 링커가 ad-hoc 서명을 붙이지 않는다. 무서명으로
+          # .app에 들어가면 앱 서명 때 codesign이 통째로 거부한다(arm64는
+          # 자동 서명돼 로컬 빌드에선 안 터진다). copy-hook.sh가 어느 슬라이스를
+          # 고르든 서명돼 있도록 셋 다 서명한다. 최종 서명은 tauri가 인증서로 한다.
+          codesign --force --sign - target/x86_64-apple-darwin/release/code-crew-hook
+          codesign --force --sign - target/universal-apple-darwin/release/code-crew-hook
+          codesign --force --sign - binaries/code-crew-hook
       - name: Build hook binary (Windows)
         if: matrix.platform == 'windows-latest'
         working-directory: ./src-tauri
