@@ -65,6 +65,11 @@ export interface Session {
   /** Timestamp set when the session transitioned working → idle via a Stop
    *  event. Drives the transient "relieved" PetState for ~3 s. */
   justFinishedAt?: number;
+  /** 메인 에이전트가 이번 턴을 Stop으로 끝냈는지. Claude Code의 팀/백그라운드
+   *  Agent는 메인 Stop 뒤에도 계속 돌기 때문에 "메인 Stop"과 "마지막
+   *  서브에이전트 종료" 중 어느 한쪽만으로는 세션 종료를 판정할 수 없다.
+   *  다음 턴이 시작되면(UserPromptSubmit·메인 PreToolUse) 다시 false. */
+  mainStopped?: boolean;
   pet: PetType;
   mainTranscriptPath?: string;
   subagentByPath: Record<string, { name: string; shortName: string }>;

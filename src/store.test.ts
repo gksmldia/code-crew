@@ -525,6 +525,313 @@ describe("codex subagent lifecycle", () => {
   });
 });
 
+// Claude Code의 팀/백그라운드 Agent는 메인 에이전트와 *동시에* 돈다.
+// 실측(2026-08-12, /tmp/code-crew-hook-evidence.log): SubagentStart/Stop이
+// 발화하고 그 사이에 메인의 PreToolUse가 섞여 들어온다. 따라서
+// "마지막 서브에이전트 종료 == 세션 종료"도, "메인 Stop == 세션 종료"도
+// 각각 단독으로는 성립하지 않는다. 둘 다 끝나야 카드를 재운다.
+describe("claude background subagent lifecycle", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  function startTurnWithSubagent(sid: string) {
+    const { applyEvent } = useStore.getState();
+    applyEvent({ kind: "SessionStart", session_id: sid, cwd: "/tmp/proj", agent_type: "claude" });
+    applyEvent({ kind: "UserPromptSubmit", session_id: sid, cwd: "/tmp/proj" });
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: sid,
+      cwd: "/tmp/proj",
+      tool_name: "Agent",
+      tool_input: { subagent_type: "T14-impl" },
+    });
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: sid,
+      cwd: "/tmp/proj",
+      tool_name: "Agent",
+      success: true,
+    });
+    applyEvent({
+      kind: "SubagentStart",
+      session_id: sid,
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-impl-7e63",
+      subagent_type: "T14-impl",
+      transcript_path: "/tmp/proj/sub.jsonl",
+    });
+  }
+
+  it("keeps working when a subagent stops while the main agent is mid-turn", () => {
+    const { applyEvent } = useStore.getState();
+    startTurnWithSubagent("s1");
+
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-impl-7e63",
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.subagents).toHaveLength(0);
+    // 메인은 Stop을 보낸 적이 없다 — 도구 없이 사고만 하는 중일 수 있으므로
+    // 서브에이전트 종료만으로 펫을 재우면 안 된다.
+    expect(sess.state).toBe("working");
+  });
+
+  it("keeps working when the main agent stops while a subagent is still running", () => {
+    const { applyEvent } = useStore.getState();
+    startTurnWithSubagent("s1");
+
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.subagents).toHaveLength(1);
+    expect(sess.state).toBe("working");
+  });
+
+  it("goes idle once the last subagent stops after the main agent stopped", () => {
+    const { applyEvent } = useStore.getState();
+    startTurnWithSubagent("s1");
+
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-impl-7e63",
+    });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.state).toBe("idle");
+    expect(sess.currentTool).toBeUndefined();
+    expect(sess.justFinishedAt).toBeTypeOf("number");
+  });
+
+  it("re-arms the main-stopped flag when the next turn starts", () => {
+    const { applyEvent } = useStore.getState();
+    startTurnWithSubagent("s1");
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-impl-7e63",
+    });
+    expect(useStore.getState().sessions.s1.state).toBe("idle");
+
+    // 다음 턴: 메인이 다시 일하기 시작하면 직전 Stop은 무효가 된다.
+    applyEvent({ kind: "UserPromptSubmit", session_id: "s1", cwd: "/tmp/proj" });
+    applyEvent({
+      kind: "SubagentStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-review-9f21",
+      subagent_type: "T14-review",
+      transcript_path: "/tmp/proj/sub2.jsonl",
+    });
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-review-9f21",
+    });
+
+    expect(useStore.getState().sessions.s1.state).toBe("working");
+  });
+
+  it("clears the main-stopped flag on a main-agent tool call", () => {
+    const { applyEvent } = useStore.getState();
+    startTurnWithSubagent("s1");
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+
+    // 메인이 도구를 다시 쓰면(= 새 턴 진행 중) 서브에이전트 종료로 재우면 안 된다.
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Read",
+      tool_input: { file_path: "/tmp/a.ts" },
+    });
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Read",
+      success: true,
+    });
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-impl-7e63",
+    });
+
+    expect(useStore.getState().sessions.s1.state).toBe("working");
+  });
+
+  it("does not clear the main-stopped flag on a subagent tool call", () => {
+    const { applyEvent } = useStore.getState();
+    startTurnWithSubagent("s1");
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+
+    // 서브에이전트의 도구 호출은 메인이 다시 일한다는 뜻이 아니다.
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Read",
+      tool_input: { file_path: "/tmp/b.ts" },
+      agent_name: "T14-impl",
+      transcript_path: "/tmp/proj/sub.jsonl",
+    });
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Read",
+      success: true,
+      agent_name: "T14-impl",
+      transcript_path: "/tmp/proj/sub.jsonl",
+    });
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-impl-7e63",
+    });
+
+    expect(useStore.getState().sessions.s1.state).toBe("idle");
+  });
+});
+
+// Claude Code의 팀/백그라운드 Agent는 부모와 transcript 파일을 공유한다.
+// 실측(2026-08-12, /tmp/code-crew-hook-evidence.log): 메인 이벤트 33건,
+// SubagentStart/Stop 4건, 서브에이전트 도구 26건이 모두 같은 경로였다.
+// 부모 경로가 subagentByPath에 등록되면 agent_name 없는 메인 이벤트가
+// 경로 폴백에 걸려 전부 서브에이전트로 오분류된다.
+describe("claude team agent shares the parent transcript path", () => {
+  const MAIN_TP = "/tmp/proj/4478c585.jsonl";
+
+  beforeEach(() => {
+    resetStore();
+  });
+
+  function startTeamTurn(sid: string) {
+    const { applyEvent } = useStore.getState();
+    applyEvent({ kind: "SessionStart", session_id: sid, cwd: "/tmp/proj", agent_type: "claude" });
+    applyEvent({ kind: "UserPromptSubmit", session_id: sid, cwd: "/tmp/proj", transcript_path: MAIN_TP });
+    applyEvent({
+      kind: "SubagentStart",
+      session_id: sid,
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-spec-review-7e63",
+      subagent_type: "T14-spec-review",
+      transcript_path: MAIN_TP,
+    });
+  }
+
+  function mainTool(sid: string, tool: string) {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: sid,
+      cwd: "/tmp/proj",
+      tool_name: tool,
+      tool_input: { file_path: "/tmp/a.ts" },
+      transcript_path: MAIN_TP,
+    });
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: sid,
+      cwd: "/tmp/proj",
+      tool_name: tool,
+      success: true,
+      transcript_path: MAIN_TP,
+    });
+  }
+
+  function lastAgentName(sid: string) {
+    const msgs = useStore.getState().sessions[sid].messages;
+    return msgs[msgs.length - 1].agentName;
+  }
+
+  it("labels main-agent tool calls as main after a team subagent started", () => {
+    startTeamTurn("s1");
+    mainTool("s1", "Edit");
+
+    expect(lastAgentName("s1")).toBe("main");
+  });
+
+  it("still labels the subagent's own tool calls by agent_name", () => {
+    const { applyEvent } = useStore.getState();
+    startTeamTurn("s1");
+
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Read",
+      tool_input: { file_path: "/tmp/b.ts" },
+      agent_name: "T14-spec-review",
+      transcript_path: MAIN_TP,
+    });
+
+    expect(lastAgentName("s1")).toBe("T14-spec-review");
+  });
+
+  it("keeps working when a subagent stops after the main agent resumed post-Stop", () => {
+    const { applyEvent } = useStore.getState();
+    startTeamTurn("s1");
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-spec-review-7e63",
+    });
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+    expect(useStore.getState().sessions.s1.state).toBe("idle");
+
+    // 팀 메시지를 받고 메인이 다시 일하기 시작한다(UserPromptSubmit 없이 도구부터).
+    mainTool("s1", "SendMessage");
+    applyEvent({
+      kind: "SubagentStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-spec-review-9f21",
+      subagent_type: "T14-spec-review",
+      transcript_path: MAIN_TP,
+    });
+    applyEvent({
+      kind: "SubagentStop",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-spec-review-9f21",
+    });
+
+    // 메인은 이번 턴에 Stop을 보낸 적이 없다 — 재우면 안 된다.
+    expect(useStore.getState().sessions.s1.state).toBe("working");
+  });
+
+  it("ignores a stale parent-path mapping when SubagentStart arrives first", () => {
+    const { applyEvent } = useStore.getState();
+    // 턴 도중 code-crew를 재시작하면 첫 수신 이벤트가 SubagentStart일 수 있다.
+    applyEvent({
+      kind: "SubagentStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      subagent_id: "aT14-spec-review-7e63",
+      subagent_type: "T14-spec-review",
+      transcript_path: MAIN_TP,
+    });
+    mainTool("s1", "Edit");
+
+    expect(lastAgentName("s1")).toBe("main");
+  });
+});
+
 describe("terminal api failures", () => {
   beforeEach(() => {
     resetStore();

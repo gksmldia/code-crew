@@ -217,6 +217,7 @@ export const useStore = create<Store>((set) => ({
             order.splice(replacementIndex, 0, ev.session_id);
           }
           if (!existed) sess.state = "idle";
+          sess.mainStopped = false;
           sess.lastSeen = Date.now();
           if (ev.source_pid != null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
@@ -244,6 +245,8 @@ export const useStore = create<Store>((set) => ({
             sess.mainTranscriptPath = ev.transcript_path;
           }
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
+          // 새 턴 시작 — 직전 Stop은 무효가 된다.
+          sess.mainStopped = false;
           sess.lastSeen = Date.now();
           break;
         }
@@ -291,7 +294,7 @@ export const useStore = create<Store>((set) => ({
           // transcript_path mapping (used by Codex subagents).
           const agentLabel = ev.agent_name && ev.agent_name.length > 0
             ? shortNameOf(ev.agent_name)
-            : tp && sess.subagentByPath[tp]
+            : tp && tp !== sess.mainTranscriptPath && sess.subagentByPath[tp]
               ? sess.subagentByPath[tp].shortName
               : "main";
           removeResolvedPermission(sess, ev.tool_name, agentLabel);
@@ -303,6 +306,9 @@ export const useStore = create<Store>((set) => ({
             // 뒤따르는 PermissionRequest는 agent 정보 없이 오므로 실제 질문 주체를 저장
             sess.lastAskAgent = agentLabel;
           }
+          // 메인이 도구를 쓰면 새 턴이 진행 중이라는 뜻 — 직전 Stop을 무효화한다.
+          // 서브에이전트의 도구 호출은 메인 상태를 말해주지 않으므로 제외한다.
+          if (agentLabel === "main") sess.mainStopped = false;
           sess.state = sess.pendingPermissions.length > 0 ? "permission" : "working";
 
           const tm = messageFromTool(ev.tool_name, (ev.tool_input as Record<string, unknown>) ?? {});
@@ -334,7 +340,7 @@ export const useStore = create<Store>((set) => ({
           if (isCodexTranscriptPath(tp)) markCodex(sess);
           const agentLabel = ev.agent_name && ev.agent_name.length > 0
             ? shortNameOf(ev.agent_name)
-            : tp && sess.subagentByPath[tp]
+            : tp && tp !== sess.mainTranscriptPath && sess.subagentByPath[tp]
               ? sess.subagentByPath[tp].shortName
               : "main";
           removeResolvedPermission(sess, ev.tool_name, agentLabel);
@@ -368,7 +374,10 @@ export const useStore = create<Store>((set) => ({
           const short = existingByPath
             ? existingByPath.shortName
             : disambiguateShortName(sess, ev.subagent_type);
-          if (tp && !existingByPath) {
+          // Claude Code의 팀/백그라운드 Agent는 부모와 transcript 파일을 공유한다.
+          // 부모 경로를 서브에이전트로 등록하면 agent_name 없는 메인 이벤트가
+          // 전부 서브에이전트로 오분류된다(실측 2026-08-12). PreToolUse와 같은 가드.
+          if (tp && tp !== sess.mainTranscriptPath && !existingByPath) {
             sess.subagentByPath[tp] = { name: ev.subagent_type, shortName: short };
           }
           if (!sess.subagents.some((x) => x.id === ev.subagent_id)) {
@@ -388,7 +397,13 @@ export const useStore = create<Store>((set) => ({
           const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, undefined));
           if (ev.subagent_id.startsWith("codex-")) markCodex(sess);
           sess.subagents = sess.subagents.filter((sa) => sa.id !== ev.subagent_id);
-          if (sess.subagents.length === 0 && sess.state === "working" && !sess.currentTool) {
+          // 마지막 서브에이전트가 끝나도 메인은 대개 턴을 계속한다 — Claude Code의
+          // 팀/백그라운드 Agent는 메인 작업과 병행되기 때문이다(실측 2026-08-12).
+          // 도구 없이 사고만 하는 동안엔 hook 이벤트가 없어, 여기서 재우면 펫이
+          // 몇 분씩 자는 것처럼 보인다. 메인이 이미 Stop을 보냈을 때만 종료로 본다.
+          // Codex는 부모 rollout의 Stop이 늦거나 누락될 수 있어 기존 판정을 유지한다.
+          const mainDone = sess.agentType === "codex" || sess.mainStopped === true;
+          if (mainDone && sess.subagents.length === 0 && sess.state === "working" && !sess.currentTool) {
             sess.justFinishedAt = Date.now();
             sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
             sess.currentTool = undefined;
@@ -456,7 +471,13 @@ export const useStore = create<Store>((set) => ({
           const sess = ensureSession(s, order, ev.session_id, withEventDefaults(ev.cwd, ev.agent_type));
           if (ev.source_pid != null && sess.sourcePid == null) sess.sourcePid = ev.source_pid;
           if (ev.pid_chain && ev.pid_chain.length > 0) sess.pidChain = ev.pid_chain;
-          if (sess.state === "working" || sess.state === "error") {
+          sess.mainStopped = true;
+          // 백그라운드 서브에이전트가 남아 있으면 메인 Stop만으로는 세션이 끝난
+          // 게 아니다 — 카드는 계속 working으로 두고, 마지막 서브에이전트가
+          // SubagentStop을 보낼 때 재운다. Codex는 부모/자식 rollout 순서가
+          // 뒤섞일 수 있어 기존 판정을 유지한다.
+          const subagentsBusy = sess.agentType !== "codex" && sess.subagents.length > 0;
+          if (!subagentsBusy && (sess.state === "working" || sess.state === "error")) {
             sess.justFinishedAt = Date.now();
           }
           // Stop은 턴 전체가 끝났다는 뜻 — main 에이전트의 권한 요청이
@@ -471,7 +492,11 @@ export const useStore = create<Store>((set) => ({
             if (sess.agentType !== "codex" && p.agentName === "main") return false;
             return true;
           });
-          sess.state = sess.pendingPermissions.length > 0 ? "permission" : "idle";
+          sess.state = sess.pendingPermissions.length > 0
+            ? "permission"
+            : subagentsBusy
+              ? "working"
+              : "idle";
           sess.currentTool = undefined;
           sess.lastSeen = Date.now();
           break;
