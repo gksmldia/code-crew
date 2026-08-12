@@ -1033,6 +1033,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .manage(ctx)
         .invoke_handler(tauri::generate_handler![
             install_hooks,
@@ -1094,23 +1095,46 @@ pub fn run() {
                 }
             }
 
-            use tauri::menu::{Menu, MenuItem};
+            use tauri::menu::{CheckMenuItem, Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            use tauri_plugin_autostart::ManagerExt;
+
+            // 첫 실행 시 자동 시작 기본 ON
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                let flag = data_dir.join("autostart-initialized");
+                if !flag.exists() {
+                    let _ = app.autolaunch().enable();
+                    let _ = std::fs::write(&flag, "1");
+                }
+            }
 
             let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
             let hide_item = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
+            let is_autostart = app.autolaunch().is_enabled().unwrap_or(false);
+            let autostart_item = CheckMenuItem::with_id(app, "autostart", "Launch at login", true, is_autostart, None::<&str>)?;
+            let autostart_item_clone = autostart_item.clone();
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &hide_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &hide_item, &autostart_item, &quit_item])?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") { let _ = w.show(); let _ = w.set_focus(); }
                     }
                     "hide" => {
                         if let Some(w) = app.get_webview_window("main") { let _ = w.hide(); }
+                    }
+                    "autostart" => {
+                        let enabled = app.autolaunch().is_enabled().unwrap_or(false);
+                        if enabled {
+                            let _ = app.autolaunch().disable();
+                            let _ = autostart_item_clone.set_checked(false);
+                        } else {
+                            let _ = app.autolaunch().enable();
+                            let _ = autostart_item_clone.set_checked(true);
+                        }
                     }
                     "quit" => {
                         let _ = std::fs::remove_file(storage::port_file_path());
