@@ -449,6 +449,9 @@ export const useStore = create<Store>((set) => ({
             pushMessage(sess, msg);
             void persistMessage(sess, msg);
           }
+          // 다른 이벤트 핸들러와 동일하게 활동 시각을 갱신한다. 이게 없으면
+          // 권한 요청이 뜬 순간 이미 idle 카운트가 진행 중인 상태가 된다.
+          sess.lastSeen = Date.now();
           break;
         }
         case "PermissionCancel": {
@@ -544,6 +547,10 @@ export const useStore = create<Store>((set) => ({
     set((state) => {
       const sess = state.sessions[sessionId];
       if (!sess) return state;
+      // 답변 대기 중인 요청이 남아 있으면 재우지 않는다. hook은 살아서 사용자
+      // 응답을 기다리는 중이고, 그동안 이벤트가 하나도 오지 않아 lastSeen만으로는
+      // "대기"와 "방치"를 구분할 수 없다.
+      if (sess.pendingPermissions.length > 0) return state;
       const since = Date.now() - sess.lastSeen;
       if (!force && since < IDLE_DELAY_MS) return state;
       return {

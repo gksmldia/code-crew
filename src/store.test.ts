@@ -1283,3 +1283,88 @@ describe("UserPromptSubmit transcript path capture", () => {
     expect(useStore.getState().sessions.s1.mainTranscriptPath).toBe("/tmp/first.jsonl");
   });
 });
+
+// 답변 대기 중인 세션은 hook 이벤트가 한 건도 오지 않는다 — idle sweep이
+// lastSeen만 보고 재우면 "답변 기다리는 중"인 카드가 자는 펫으로 바뀐다.
+describe("pending permissions keep the session awake", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  function askAndGoSilent(sinceMs: number) {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "어디까지?", options: [{ label: "전부" }] }] },
+      request_id: "r1",
+    });
+    // 사용자가 답할 때까지 이벤트가 끊긴 상태를 만든다.
+    useStore.setState((st) => ({
+      sessions: {
+        ...st.sessions,
+        s1: { ...st.sessions.s1, lastSeen: Date.now() - sinceMs },
+      },
+    }));
+  }
+
+  it("does not sleep after the idle delay while a request is unanswered", () => {
+    askAndGoSilent(10 * 60 * 1000);
+
+    useStore.getState().setIdle("s1");
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.state).toBe("permission");
+    expect(pendingIds(sess)).toEqual(["r1"]);
+  });
+
+  it("does not sleep even when the sweep forces idle", () => {
+    askAndGoSilent(10 * 60 * 1000);
+
+    useStore.getState().setIdle("s1", true);
+
+    expect(useStore.getState().sessions.s1.state).toBe("permission");
+  });
+
+  it("still sleeps once the queue is empty", () => {
+    askAndGoSilent(10 * 60 * 1000);
+
+    useStore.getState().applyEvent({ kind: "PermissionCancel", request_id: "r1" });
+    useStore.getState().setIdle("s1");
+
+    expect(useStore.getState().sessions.s1.state).toBe("idle");
+  });
+
+  it("refreshes lastSeen so the idle countdown starts at the request", () => {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "claude",
+    });
+    const stale = Date.now() - 4 * 60 * 1000;
+    useStore.setState((st) => ({
+      sessions: { ...st.sessions, s1: { ...st.sessions.s1, lastSeen: stale } },
+    }));
+
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: { command: "echo hi" },
+      request_id: "r2",
+    });
+
+    expect(useStore.getState().sessions.s1.lastSeen).toBeGreaterThan(stale);
+  });
+});
