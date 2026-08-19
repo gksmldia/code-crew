@@ -843,6 +843,8 @@ fn map_codex_line(
                         .unwrap_or(inner_kind)
                         .to_string(),
                     success,
+                    // Codex에는 Claude Code의 백그라운드 쉘 개념이 없다.
+                    background_task_id: None,
                     transcript_path: routed_transcript,
                     agent_name: None,
                     agent_type: Some("codex".into()),

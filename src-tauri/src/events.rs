@@ -57,6 +57,12 @@ pub enum Event {
         cwd: Option<String>,
         tool_name: String,
         success: bool,
+        /// `run_in_background: true`로 띄운 Bash의 백그라운드 쉘 ID.
+        /// Claude Code가 `tool_response.backgroundTaskId`로 돌려준다 —
+        /// 이 쉘은 턴이 끝난 뒤에도 계속 돌기 때문에 카드가 잠들어도
+        /// "아직 뭔가 돌고 있음"을 표시하는 근거가 된다.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background_task_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transcript_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -199,8 +205,14 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             // inside an otherwise-successful response.
             success: raw
                 .tool_response
+                .as_ref()
                 .and_then(|v| v.get("success").and_then(|x| x.as_bool()))
                 .unwrap_or(true),
+            background_task_id: raw
+                .tool_response
+                .as_ref()
+                .and_then(|v| v.get("backgroundTaskId").and_then(|x| x.as_str()))
+                .map(str::to_string),
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
             agent_type: Some(agent_type.to_string()),
@@ -216,6 +228,8 @@ pub fn from_raw(raw: RawHookPayload, agent_type: &str, request_id: Option<String
             cwd: cwd_opt,
             tool_name: raw.tool_name?,
             success: false,
+            // 실행 자체가 실패했으면 백그라운드 쉘도 뜨지 않는다.
+            background_task_id: None,
             transcript_path: raw.transcript_path.clone(),
             agent_name: raw.agent_type.clone(),
             agent_type: Some(agent_type.to_string()),
@@ -451,6 +465,41 @@ mod tests {
                 }
                 _ => panic!("wrong variant for {name}"),
             }
+        }
+    }
+
+    #[test]
+    fn post_tool_use_carries_background_task_id() {
+        // 실측(2026-08-19): run_in_background Bash의 PostToolUse 페이로드는
+        // tool_response.backgroundTaskId로 쉘 ID를 돌려준다.
+        let mut r = raw("PostToolUse", "s9");
+        r.tool_name = Some("Bash".into());
+        r.tool_input = Some(json!({"command": "sleep 15", "run_in_background": true}));
+        r.tool_response = Some(json!({
+            "backgroundTaskId": "bb7w8134l",
+            "interrupted": false,
+            "stdout": "",
+            "stderr": ""
+        }));
+        let e = from_raw(r, "claude", None).unwrap();
+        match e {
+            Event::PostToolUse { background_task_id, success, .. } => {
+                assert_eq!(background_task_id.as_deref(), Some("bb7w8134l"));
+                assert!(success);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn post_tool_use_without_background_shell_has_no_task_id() {
+        let mut r = raw("PostToolUse", "s10");
+        r.tool_name = Some("Bash".into());
+        r.tool_response = Some(json!({"stdout": "ok", "stderr": ""}));
+        let e = from_raw(r, "claude", None).unwrap();
+        match e {
+            Event::PostToolUse { background_task_id, .. } => assert!(background_task_id.is_none()),
+            _ => panic!("wrong variant"),
         }
     }
 

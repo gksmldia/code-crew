@@ -27,9 +27,13 @@ function agentBadge(agent: Session["agentType"]) {
     : <span title="Codex" className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-900">GC</span>;
 }
 
-function fallbackText(state: Session["state"]): string {
-  if (state === "working") return "working...";
-  if (state === "error") return "에러";
+function fallbackText(session: Session): string {
+  if (session.state === "working") return "working...";
+  if (session.state === "error") return "에러";
+  // 턴은 끝났지만 백그라운드 쉘(빌드·테스트·개발 서버)이 아직 도는 상태.
+  if (session.backgroundTasks.length > 0) {
+    return `백그라운드 ${session.backgroundTasks.length}개 실행 중`;
+  }
   return "zzz...";
 }
 
@@ -165,6 +169,11 @@ export function PetCard({ session }: PetCardProps) {
         </div>
         <span className="flex items-center gap-1">
           {isTeam && <span className="text-[10px]">🤹 {session.subagents.length}</span>}
+          {session.backgroundTasks.length > 0 && (
+            <span className="text-[10px]" title="백그라운드 쉘 실행 중">
+              ⏳ {session.backgroundTasks.length}
+            </span>
+          )}
           <span>{statusEmoji(session.state)}</span>
           <button
             onClick={(e) => { e.stopPropagation(); removeSession(session.sessionId); }}
@@ -218,7 +227,11 @@ export function PetCard({ session }: PetCardProps) {
                 kind={lastMsg.kind}
               />
             ) : (
-              <SpeechBubble text={fallbackText(session.state)} kind="info" />
+              <SpeechBubble
+                emoji={session.state === "idle" && session.backgroundTasks.length > 0 ? "⏳" : undefined}
+                text={fallbackText(session)}
+                kind="info"
+              />
             )}
           </div>
         </div>

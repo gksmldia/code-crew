@@ -45,6 +45,14 @@ export interface PendingPermission {
   agentName?: string;
 }
 
+/** `run_in_background: true`로 띄운 Bash 쉘. 턴이 끝나도 계속 돌기 때문에
+ *  카드가 잠든 뒤에도 "아직 뭔가 돌고 있음"을 표시하는 근거가 된다. */
+export interface BackgroundTask {
+  /** Claude Code가 PostToolUse `tool_response.backgroundTaskId`로 주는 쉘 ID. */
+  id: string;
+  startedAt: number;
+}
+
 export interface Session {
   sessionId: string;
   agentType: AgentType;
@@ -62,6 +70,9 @@ export interface Session {
    *  processes parked on /permission until they timed out. */
   pendingPermissions: PendingPermission[];
   lastSeen: number;
+  /** 아직 돌고 있는 백그라운드 쉘 목록. 종료는 hook이 아니라 transcript의
+   *  <task-notification>으로만 오므로 idle sweep이 지운다. */
+  backgroundTasks: BackgroundTask[];
   /** Timestamp set when the session transitioned working → idle via a Stop
    *  event. Drives the transient "relieved" PetState for ~3 s. */
   justFinishedAt?: number;
@@ -90,7 +101,7 @@ export type Event =
   | { kind: "SessionEnd"; session_id: string }
   | { kind: "UserPromptSubmit"; session_id: string; cwd?: string | null; agent_type?: AgentType | null; source_pid?: number | null; pid_chain?: number[] | null; transcript_path?: string | null }
   | { kind: "PreToolUse"; session_id: string; cwd?: string | null; tool_name: string; tool_input: unknown; transcript_path?: string | null; agent_name?: string | null; agent_type?: AgentType | null; source_pid?: number | null; pid_chain?: number[] | null }
-  | { kind: "PostToolUse"; session_id: string; cwd?: string | null; tool_name: string; success: boolean; transcript_path?: string | null; agent_name?: string | null; agent_type?: AgentType | null; source_pid?: number | null; pid_chain?: number[] | null }
+  | { kind: "PostToolUse"; session_id: string; cwd?: string | null; tool_name: string; success: boolean; background_task_id?: string | null; transcript_path?: string | null; agent_name?: string | null; agent_type?: AgentType | null; source_pid?: number | null; pid_chain?: number[] | null }
   | { kind: "SubagentStart"; session_id: string; cwd?: string | null; subagent_id: string; subagent_type: string; transcript_path?: string | null }
   | { kind: "SubagentStop"; session_id: string; cwd?: string | null; subagent_id: string }
   | { kind: "PermissionRequest"; session_id: string; cwd?: string | null; tool_name: string; tool_input: unknown; request_id: string; suggestions?: unknown; agent_name?: string | null; agent_type?: AgentType | null; source_pid?: number | null; pid_chain?: number[] | null }

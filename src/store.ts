@@ -15,6 +15,7 @@ interface Store {
   sessionOrder: string[];
   applyEvent: (ev: Event) => void;
   setIdle: (sessionId: string, force?: boolean) => void;
+  clearBackgroundTasks: (sessionId: string, ids: string[]) => void;
   acknowledgePermission: (sessionId: string, requestId: string) => void;
   addRestoredMessages: (sessionId: string, msgs: Message[]) => void;
   setProjectKey: (sessionId: string, key: string) => void;
@@ -61,6 +62,7 @@ function ensureSession(s: Record<string, Session>, order: string[], sid: string,
       subagents: [],
       pendingPermissions: [],
       lastSeen: Date.now(),
+      backgroundTasks: [],
       pet: petForSession(sid),
       subagentByPath: {},
       pendingSubagentTypes: [],
@@ -345,6 +347,13 @@ export const useStore = create<Store>((set) => ({
               : "main";
           removeResolvedPermission(sess, ev.tool_name, agentLabel);
           if (ev.tool_name !== "AskUserQuestion") clearAnsweredQuestions(sess, agentLabel);
+          // run_in_background로 띄운 쉘은 Stop 뒤에도 계속 돈다. 종료는 hook을
+          // 발화하지 않고 transcript의 <task-notification>으로만 오므로(실측
+          // 2026-08-19), 여기서 ID를 잡아두고 idle sweep이 지운다.
+          const bgId = ev.background_task_id;
+          if (bgId && !sess.backgroundTasks.some((t) => t.id === bgId)) {
+            sess.backgroundTasks.push({ id: bgId, startedAt: Date.now() });
+          }
           if (!ev.success) {
             sess.state = sess.pendingPermissions.length > 0 ? "permission" : "error";
             const msg: Message = {
@@ -555,6 +564,19 @@ export const useStore = create<Store>((set) => ({
       if (!force && since < IDLE_DELAY_MS) return state;
       return {
         sessions: { ...state.sessions, [sessionId]: { ...sess, state: "idle", currentTool: undefined } },
+      };
+    }),
+
+  clearBackgroundTasks: (sessionId, ids) =>
+    set((state) => {
+      const sess = state.sessions[sessionId];
+      if (!sess || ids.length === 0) return state;
+      const remaining = sess.backgroundTasks.filter((t) => !ids.includes(t.id));
+      // 5초마다 도는 sweep이 매번 새 객체를 만들어 리렌더를 유발하지 않도록
+      // 실제로 지워진 게 있을 때만 갱신한다.
+      if (remaining.length === sess.backgroundTasks.length) return state;
+      return {
+        sessions: { ...state.sessions, [sessionId]: { ...sess, backgroundTasks: remaining } },
       };
     }),
 

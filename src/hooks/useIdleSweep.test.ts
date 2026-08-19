@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Session } from "../types";
 import {
+  BACKGROUND_TASK_MAX_MS,
   CODEX_IDLE_REMOVE_MS,
   CODEX_STALE_WORKING_IDLE_MS,
   WORKING_STALE_IDLE_MS,
   WORKING_TRANSCRIPT_FRESH_MS,
+  expiredBackgroundTaskIds,
   shouldForceIdleStaleWorkingSession,
   shouldRemoveIdleSession,
   workingVerdict,
@@ -22,6 +24,7 @@ function session(overrides: Partial<Session> = {}): Session {
     subagents: [],
     pendingPermissions: [],
     lastSeen: Date.now(),
+    backgroundTasks: [],
     pet: "calico",
     subagentByPath: {},
     pendingSubagentTypes: [],
@@ -183,5 +186,26 @@ describe("workingVerdict", () => {
     expect(
       workingVerdict(now, 60_000, { mtime_ms: null, interrupted: false }),
     ).toBe("fallback");
+  });
+});
+
+// 백그라운드 쉘 완료는 transcript에만 남는다 — tail 밖으로 밀려 알림을
+// 놓쳐도 뱃지가 영원히 남지 않게 시간 상한을 둔다.
+describe("expiredBackgroundTaskIds", () => {
+  const now = 1_000_000_000;
+
+  it("expires only the shells past the safety cap", () => {
+    const sess = session({
+      backgroundTasks: [
+        { id: "old", startedAt: now - (BACKGROUND_TASK_MAX_MS + 1_000) },
+        { id: "fresh", startedAt: now - 60_000 },
+      ],
+    });
+
+    expect(expiredBackgroundTaskIds(sess, now)).toEqual(["old"]);
+  });
+
+  it("returns nothing when no shell is tracked", () => {
+    expect(expiredBackgroundTaskIds(session(), now)).toEqual([]);
   });
 });

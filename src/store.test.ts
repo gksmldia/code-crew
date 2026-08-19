@@ -1368,3 +1368,81 @@ describe("pending permissions keep the session awake", () => {
     expect(useStore.getState().sessions.s1.lastSeen).toBeGreaterThan(stale);
   });
 });
+
+// 실측(2026-08-19, /tmp/code-crew-hook.log): run_in_background Bash는
+// PostToolUse의 tool_response.backgroundTaskId로 쉘 ID를 준다. 그 쉘은
+// Stop 뒤에도 계속 돌고, 종료는 hook이 아니라 transcript에만 남는다.
+describe("background shell tracking", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  function launchBackgroundShell(sid: string, taskId: string) {
+    const { applyEvent } = useStore.getState();
+    applyEvent({
+      kind: "PreToolUse",
+      session_id: sid,
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      tool_input: { command: "npm run build", run_in_background: true },
+    });
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: sid,
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      success: true,
+      background_task_id: taskId,
+    });
+  }
+
+  it("keeps the background shell tracked after the turn stops", () => {
+    launchBackgroundShell("s1", "bb7w8134l");
+    useStore.getState().applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
+
+    const sess = useStore.getState().sessions.s1;
+    expect(sess.state).toBe("idle");
+    expect(sess.backgroundTasks.map((t) => t.id)).toEqual(["bb7w8134l"]);
+  });
+
+  it("ignores a foreground tool call and never double-tracks one shell", () => {
+    const { applyEvent } = useStore.getState();
+    launchBackgroundShell("s1", "bb7w8134l");
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Read",
+      success: true,
+    });
+    applyEvent({
+      kind: "PostToolUse",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "Bash",
+      success: true,
+      background_task_id: "bb7w8134l",
+    });
+
+    expect(useStore.getState().sessions.s1.backgroundTasks).toHaveLength(1);
+  });
+
+  it("drops only the shells reported finished by the transcript", () => {
+    launchBackgroundShell("s1", "bb7w8134l");
+    launchBackgroundShell("s1", "bmq4x9gef");
+
+    useStore.getState().clearBackgroundTasks("s1", ["bmq4x9gef"]);
+
+    expect(useStore.getState().sessions.s1.backgroundTasks.map((t) => t.id)).toEqual(["bb7w8134l"]);
+  });
+
+  it("keeps the same session object when nothing was finished", () => {
+    launchBackgroundShell("s1", "bb7w8134l");
+    const before = useStore.getState().sessions.s1;
+
+    useStore.getState().clearBackgroundTasks("s1", []);
+    useStore.getState().clearBackgroundTasks("s1", ["other"]);
+
+    expect(useStore.getState().sessions.s1).toBe(before);
+  });
+});

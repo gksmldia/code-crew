@@ -10,11 +10,18 @@ pub struct TranscriptStatus {
     pub mtime_ms: Option<u64>,
     /// 마지막 유효 엔트리가 사용자 중단 마커인지.
     pub interrupted: bool,
+    /// tail에서 확인된 "끝난" 백그라운드 쉘 ID들. 백그라운드 종료는 hook을
+    /// 발화하지 않고 transcript의 <task-notification>으로만 기록된다
+    /// (실측 2026-08-19).
+    pub finished_background_tasks: Vec<String>,
 }
 
 /// Esc 중단 시 transcript에 남는 user 엔트리 텍스트의 접두사.
 /// "[Request interrupted by user]"와 "... for tool use]" 변형을 함께 커버한다.
 const INTERRUPT_MARKER: &str = "[Request interrupted by user";
+
+/// 백그라운드 쉘이 더 이상 돌지 않는다고 볼 <status> 값.
+const FINISHED_TASK_STATUSES: &[&str] = &["completed", "failed", "stopped"];
 
 /// 끝에서 이만큼만 읽는다 — sweep이 5초마다 호출하므로 큰 transcript를
 /// 통째로 읽지 않기 위함. 마지막 엔트리 몇 개를 보기엔 충분한 크기.
@@ -22,35 +29,77 @@ const TAIL_BYTES: u64 = 64 * 1024;
 
 pub fn status(path: &Path) -> TranscriptStatus {
     let Ok(meta) = std::fs::metadata(path) else {
-        return TranscriptStatus { mtime_ms: None, interrupted: false };
+        return TranscriptStatus {
+            mtime_ms: None,
+            interrupted: false,
+            finished_background_tasks: Vec::new(),
+        };
     };
     let mtime_ms = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64);
+    let tail = read_tail(path, meta.len()).unwrap_or_default();
     TranscriptStatus {
         mtime_ms,
-        interrupted: last_entry_is_interrupt(path, meta.len()),
+        interrupted: last_entry_is_interrupt(&tail),
+        finished_background_tasks: finished_background_tasks(&String::from_utf8_lossy(&tail)),
     }
+}
+
+/// 파일 끝 TAIL_BYTES만 읽는다. 실패하면 None.
+fn read_tail(path: &Path, len: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES))).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// tail에 남은 <task-notification> 블록에서 끝난 백그라운드 쉘 ID를 모은다.
+/// 같은 알림이 queue-operation 라인과 user 엔트리로 두 번 기록되므로 중복은
+/// 제거한다. 한 블록에 task-id가 여러 개인 경우(이전 세션 orphan 정리)도
+/// 그대로 커버된다.
+fn finished_background_tasks(tail: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for block in tail.split("<task-notification>").skip(1) {
+        let Some(end) = block.find("</task-notification>") else {
+            continue;
+        };
+        let block = &block[..end];
+        let Some(status) = tag_value(block, "<status>", "</status>") else {
+            continue;
+        };
+        if !FINISHED_TASK_STATUSES.contains(&status) {
+            continue;
+        }
+        let mut rest = block;
+        while let Some(id) = tag_value(rest, "<task-id>", "</task-id>") {
+            if !ids.iter().any(|x| x == id) {
+                ids.push(id.to_string());
+            }
+            let consumed = rest.find("</task-id>").map(|i| i + "</task-id>".len());
+            match consumed {
+                Some(i) => rest = &rest[i..],
+                None => break,
+            }
+        }
+    }
+    ids
+}
+
+fn tag_value<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = s.find(open)? + open.len();
+    let end = s[start..].find(close)? + start;
+    Some(s[start..end].trim())
 }
 
 /// 마지막 유효 엔트리(메타데이터 라인 제외)가 중단 마커인 user 엔트리인지.
 /// 판단 불가(파싱 실패·비-user 엔트리)면 false — 오판으로 작업 중인 펫을
 /// 재우는 것보다 안전망(시간 상한)에 맡기는 쪽으로 기운다.
-fn last_entry_is_interrupt(path: &Path, len: u64) -> bool {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else {
-        return false;
-    };
-    let start = len.saturating_sub(TAIL_BYTES);
-    if f.seek(SeekFrom::Start(start)).is_err() {
-        return false;
-    }
-    let mut buf = Vec::new();
-    if f.read_to_end(&mut buf).is_err() {
-        return false;
-    }
+fn last_entry_is_interrupt(buf: &[u8]) -> bool {
     for line in buf.split(|b| *b == b'\n').rev() {
         if line.is_empty() {
             continue;
@@ -181,6 +230,48 @@ mod tests {
             json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "thinking"}]}}),
         ]);
         assert!(!status(&path).interrupted);
+        let _ = fs::remove_file(path);
+    }
+
+    // 실측(2026-08-19): 백그라운드 쉘이 끝나면 hook은 발화하지 않고
+    // transcript에 queue-operation과 user 엔트리로 같은 <task-notification>이
+    // 두 번 기록된다.
+    #[test]
+    fn collects_finished_background_task_ids_once() {
+        let notification = "<task-notification>\n<task-id>bb7w8134l</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n<summary>Background command \"test\" completed (exit code 0)</summary>\n</task-notification>";
+        let path = temp_transcript(&[
+            json!({"type": "queue-operation", "operation": "enqueue", "content": notification}),
+            json!({"type": "user", "message": {"role": "user", "content": notification}}),
+        ]);
+        assert_eq!(status(&path).finished_background_tasks, vec!["bb7w8134l"]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn collects_failed_and_orphan_stopped_tasks() {
+        let path = temp_transcript(&[
+            json!({"type": "queue-operation", "operation": "enqueue", "content": "<task-notification>\n<task-id>byw42j35x</task-id>\n<status>failed</status>\n</task-notification>"}),
+            json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>batigchdg</task-id>\n<task-id>bbaebcbv7</task-id>\n<status>stopped</status>\n</task-notification>"}}),
+        ]);
+        assert_eq!(
+            status(&path).finished_background_tasks,
+            vec!["byw42j35x", "batigchdg", "bbaebcbv7"]
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn running_background_shell_is_not_reported_finished() {
+        // 실행 시작 시점의 tool_result에는 task-notification이 없다.
+        let path = temp_transcript(&[json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{
+                "tool_use_id": "toolu_01",
+                "type": "tool_result",
+                "content": "Command running in background with ID: bb7w8134l."
+            }]}
+        })]);
+        assert!(status(&path).finished_background_tasks.is_empty());
         let _ = fs::remove_file(path);
     }
 

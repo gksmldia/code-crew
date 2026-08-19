@@ -15,9 +15,23 @@ export const WORKING_TRANSCRIPT_FRESH_MS = 5 * 60 * 1000;
 export const WORKING_STALE_IDLE_MS = 30 * 60 * 1000;
 // 이벤트가 방금 온 세션은 transcript를 볼 필요가 없다(경합 방지 겸 IO 절약).
 const WORKING_CHECK_MIN_SILENCE_MS = 15 * 1000;
+// 백그라운드 쉘 추적의 안전망 — 완료 알림을 놓쳐도(tail 밖으로 밀려남 등)
+// 뱃지가 영원히 남지 않게 한다. 오래 도는 개발 서버까지 감안해 넉넉히 잡는다.
+export const BACKGROUND_TASK_MAX_MS = 60 * 60 * 1000;
 
 /// src-tauri transcript_status 커맨드의 응답 형태.
-export type TranscriptStatus = { mtime_ms: number | null; interrupted: boolean };
+export type TranscriptStatus = {
+  mtime_ms: number | null;
+  interrupted: boolean;
+  finished_background_tasks: string[];
+};
+
+/// 상한을 넘긴 백그라운드 쉘 ID. transcript 신호를 놓쳤을 때의 정리용.
+export function expiredBackgroundTaskIds(sess: Session, now: number): string[] {
+  return sess.backgroundTasks
+    .filter((t) => now - t.startedAt > BACKGROUND_TASK_MAX_MS)
+    .map((t) => t.id);
+}
 
 export function shouldForceIdleStaleWorkingSession(sess: Session, since: number) {
   return (
@@ -53,7 +67,7 @@ export function shouldRemoveIdleSession(
 export function workingVerdict(
   now: number,
   since: number,
-  st: TranscriptStatus,
+  st: Pick<TranscriptStatus, "mtime_ms" | "interrupted">,
 ): "sleep" | "keep" | "fallback" {
   // Esc 중단은 Stop hook이 발화되지 않는 CC 스펙 — transcript의 중단
   // 마커가 유일한 신호다. 감지 즉시 재운다.
@@ -67,7 +81,7 @@ export function useIdleSweep() {
   useEffect(() => {
     const t = setInterval(() => {
       const now = Date.now();
-      const { sessions, setIdle, removeSession } = useStore.getState();
+      const { sessions, setIdle, removeSession, clearBackgroundTasks } = useStore.getState();
       for (const [sid, sess] of Object.entries(sessions)) {
         const since = now - sess.lastSeen;
         const probePid = sess.pidChain?.[0] ?? sess.sourcePid;
@@ -89,26 +103,38 @@ export function useIdleSweep() {
         // lastSeen만으로는 "일하는 중"과 "Esc 중단/방치"를 구분할 수 없다.
         // working 세션은 transcript(mtime·중단 마커)로 판정한다.
         const tpath = sess.mainTranscriptPath;
-        if (
+        const wantsWorkingVerdict =
           sess.agentType !== "codex" &&
           sess.state === "working" &&
-          tpath &&
-          since > WORKING_CHECK_MIN_SILENCE_MS
-        ) {
-          const seenAtProbe = sess.lastSeen;
-          void invoke<TranscriptStatus>("transcript_status", { path: tpath })
-            .then((st) => {
-              // 판정하는 사이 새 이벤트가 도착했으면 결과를 버린다.
-              const cur = useStore.getState().sessions[sid];
-              if (!cur || cur.state !== "working" || cur.lastSeen !== seenAtProbe) return;
-              const v = workingVerdict(Date.now(), Date.now() - seenAtProbe, st);
-              if (v === "sleep") setIdle(sid, true);
-              else if (v === "fallback") setIdle(sid, false);
-            })
-            .catch(() => setIdle(sid, false));
-        } else {
+          Boolean(tpath) &&
+          since > WORKING_CHECK_MIN_SILENCE_MS;
+        // 백그라운드 쉘은 턴이 끝난 뒤에도 돌기 때문에 상태와 무관하게 확인한다.
+        const wantsBackgroundSweep = sess.backgroundTasks.length > 0;
+        if (wantsBackgroundSweep) {
+          clearBackgroundTasks(sid, expiredBackgroundTaskIds(sess, now));
+        }
+        if (!wantsWorkingVerdict) {
           setIdle(sid, shouldForceIdleStaleWorkingSession(sess, since));
         }
+        if (!tpath || (!wantsWorkingVerdict && !wantsBackgroundSweep)) continue;
+
+        const seenAtProbe = sess.lastSeen;
+        void invoke<TranscriptStatus>("transcript_status", { path: tpath })
+          .then((st) => {
+            if (wantsBackgroundSweep) {
+              clearBackgroundTasks(sid, st.finished_background_tasks);
+            }
+            if (!wantsWorkingVerdict) return;
+            // 판정하는 사이 새 이벤트가 도착했으면 결과를 버린다.
+            const cur = useStore.getState().sessions[sid];
+            if (!cur || cur.state !== "working" || cur.lastSeen !== seenAtProbe) return;
+            const v = workingVerdict(Date.now(), Date.now() - seenAtProbe, st);
+            if (v === "sleep") setIdle(sid, true);
+            else if (v === "fallback") setIdle(sid, false);
+          })
+          .catch(() => {
+            if (wantsWorkingVerdict) setIdle(sid, false);
+          });
       }
     }, SWEEP_MS);
     return () => clearInterval(t);
