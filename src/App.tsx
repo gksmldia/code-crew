@@ -138,14 +138,20 @@ function App() {
     const un = listen<Event>("event", async (e) => {
       const ev = e.payload;
       applyEvent(ev);
-      if (ev.kind === "SessionStart" && !restoredRef.current.has(ev.session_id)) {
-        restoredRef.current.add(ev.session_id);
+      // SessionStart는 위젯이 그 세션보다 먼저 떠 있을 때만 도착한다. 세션 도중
+      // 위젯을 켜면 다른 이벤트가 카드를 먼저 만들고, 이름이 그 순간 cwd의 마지막
+      // 폴더(예: src-tauri)로 굳고 projectKey가 비어 이력도 안 쌓인다. cwd가 실린
+      // 이벤트면 종류와 무관하게 세션당 한 번 보정한다.
+      const cwd = "cwd" in ev ? ev.cwd : undefined;
+      const sid = "session_id" in ev ? ev.session_id : undefined;
+      if (cwd && sid && !restoredRef.current.has(sid)) {
+        restoredRef.current.add(sid);
         const [projectKey, displayName] = await Promise.all([
-          deriveProjectKey(ev.cwd),
-          deriveDisplayName(ev.cwd),
+          deriveProjectKey(cwd),
+          deriveDisplayName(cwd),
         ]);
-        useStore.getState().setProjectKey(ev.session_id, projectKey);
-        if (displayName) useStore.getState().setDisplayName(ev.session_id, displayName);
+        useStore.getState().setProjectKey(sid, projectKey);
+        if (displayName) useStore.getState().setDisplayName(sid, displayName);
         const file = await invoke<ProjectFile | null>("load_project_history", { projectKey });
         if (file) {
           const msgs: Message[] = file.messages.map((m) => ({
@@ -158,7 +164,7 @@ function App() {
             kind: m.kind,
             timestamp: m.timestamp,
           }));
-          addRestored(ev.session_id, msgs);
+          addRestored(sid, msgs);
         }
       }
     });

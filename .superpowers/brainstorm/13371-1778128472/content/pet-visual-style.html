@@ -1,0 +1,268 @@
+<h2>펫 비주얼 스타일 + 매핑 + 세션 메모리</h2>
+
+<div class="section">
+  <h3>1. 픽셀 아트 vs SVG 캐릭터</h3>
+
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">픽셀 아트 (Pixel Art)</div>
+      <div class="mockup-body" style="display:flex;flex-direction:column;gap:12px;align-items:center;padding:20px">
+        <div style="display:flex;gap:16px;font-family:monospace;font-size:48px;image-rendering:pixelated">
+          <span style="filter:drop-shadow(2px 2px 0 #000)">🐶</span>
+          <span style="filter:drop-shadow(2px 2px 0 #000)">🐱</span>
+          <span style="filter:drop-shadow(2px 2px 0 #000)">🦊</span>
+        </div>
+        <div style="font-size:11px;background:#222;color:#9f9;padding:8px;font-family:monospace;border-radius:4px;max-width:90%">
+          16x16 / 32x32 sprite sheets<br>
+          frame-by-frame walk/idle/work<br>
+          레트로한 게임 분위기
+        </div>
+        <p class="label">예시 / 어셋 소스</p>
+        <ul style="font-size:12px;line-height:1.6;text-align:left;width:100%">
+          <li><a href="https://itch.io/game-assets/free/tag-cats/tag-pixel-art" target="_blank">itch.io 무료 픽셀 고양이</a></li>
+          <li><a href="https://itch.io/game-assets/free/tag-dogs/tag-pixel-art" target="_blank">itch.io 무료 픽셀 강아지</a></li>
+          <li><a href="https://itch.io/game-assets/free/tag-animals/tag-pixel-art" target="_blank">itch.io 무료 픽셀 동물 전체</a></li>
+          <li><a href="https://www.spriters-resource.com/" target="_blank">The Spriters Resource</a> (참고용, 라이센스 주의)</li>
+          <li><a href="https://opengameart.org/art-search-advanced?keys=animal&field_art_type_tid%5B%5D=9" target="_blank">OpenGameArt 무료 동물 스프라이트</a></li>
+        </ul>
+        <p class="label" style="margin-top:8px">스타일 참고작</p>
+        <ul style="font-size:12px;line-height:1.6;text-align:left;width:100%">
+          <li><a href="https://store.steampowered.com/app/413150/Stardew_Valley/" target="_blank">Stardew Valley</a> — 16x16 동물</li>
+          <li><a href="https://store.steampowered.com/app/1253920/Loop_Hero/" target="_blank">Loop Hero</a> — 단순한 픽셀 캐릭터</li>
+          <li><a href="https://store.steampowered.com/app/1581770/A_Short_Hike/" target="_blank">A Short Hike</a> — 부드러운 픽셀</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="mockup">
+      <div class="mockup-header">SVG / 벡터 캐릭터</div>
+      <div class="mockup-body" style="display:flex;flex-direction:column;gap:12px;align-items:center;padding:20px">
+        <svg viewBox="0 0 200 80" style="width:100%;max-width:240px;height:auto">
+          <!-- Cute SVG cat -->
+          <g transform="translate(20,20)">
+            <ellipse cx="20" cy="35" rx="18" ry="14" fill="#fbbf24"/>
+            <polygon points="6,22 12,8 16,22" fill="#fbbf24"/>
+            <polygon points="34,22 28,8 24,22" fill="#fbbf24"/>
+            <circle cx="14" cy="30" r="2" fill="#1f2937"/>
+            <circle cx="26" cy="30" r="2" fill="#1f2937"/>
+            <path d="M 18 36 Q 20 38 22 36" stroke="#1f2937" stroke-width="1.5" fill="none"/>
+          </g>
+          <!-- Cute SVG dog -->
+          <g transform="translate(80,20)">
+            <ellipse cx="20" cy="35" rx="18" ry="14" fill="#a78bfa"/>
+            <ellipse cx="6" cy="30" rx="6" ry="10" fill="#8b5cf6"/>
+            <ellipse cx="34" cy="30" rx="6" ry="10" fill="#8b5cf6"/>
+            <circle cx="14" cy="30" r="2" fill="#1f2937"/>
+            <circle cx="26" cy="30" r="2" fill="#1f2937"/>
+            <ellipse cx="20" cy="38" rx="3" ry="2" fill="#1f2937"/>
+          </g>
+          <!-- Cute SVG fox -->
+          <g transform="translate(140,20)">
+            <ellipse cx="20" cy="35" rx="18" ry="14" fill="#fb923c"/>
+            <polygon points="4,25 10,8 14,22" fill="#fb923c"/>
+            <polygon points="36,25 30,8 26,22" fill="#fb923c"/>
+            <ellipse cx="20" cy="40" rx="6" ry="4" fill="#fef3c7"/>
+            <circle cx="14" cy="30" r="2" fill="#1f2937"/>
+            <circle cx="26" cy="30" r="2" fill="#1f2937"/>
+          </g>
+        </svg>
+        <div style="font-size:11px;background:#222;color:#9cf;padding:8px;font-family:monospace;border-radius:4px;max-width:90%">
+          벡터, 무한 확대 가능<br>
+          CSS/JS로 직접 애니메이션<br>
+          깔끔/모던한 분위기
+        </div>
+        <p class="label">예시 / 어셋 소스</p>
+        <ul style="font-size:12px;line-height:1.6;text-align:left;width:100%">
+          <li><a href="https://iconscout.com/lottie-animations/pets" target="_blank">IconScout Pets Lottie/SVG</a> (2,215개)</li>
+          <li><a href="https://iconscout.com/lottie-animations/feline-animal" target="_blank">IconScout 고양이과 (97개)</a></li>
+          <li><a href="https://www.vecteezy.com/free-svg/animal" target="_blank">Vecteezy 무료 SVG 동물</a></li>
+          <li><a href="https://lottiefiles.com/featured" target="_blank">LottieFiles</a> — 검색 "cat", "dog"</li>
+          <li><a href="https://www.dicebear.com/" target="_blank">DiceBear</a> — 절차적 아바타 생성 (animals 스타일)</li>
+        </ul>
+        <p class="label" style="margin-top:8px">스타일 참고작</p>
+        <ul style="font-size:12px;line-height:1.6;text-align:left;width:100%">
+          <li><a href="https://discord.com/" target="_blank">Discord Wumpus</a></li>
+          <li><a href="https://www.notion.so/" target="_blank">Notion 일러스트</a></li>
+          <li><a href="https://duolingo.com/" target="_blank">Duolingo Duo</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="pros-cons" style="margin-top:16px">
+    <div class="pros">
+      <h4>픽셀 아트 장점</h4>
+      <ul>
+        <li>레트로/펫 정체성과 잘 맞음 (Tamagotchi 감성)</li>
+        <li>저해상도라 작은 카드에 디테일 살리기 쉬움</li>
+        <li>무료 어셋 풍부 (itch.io)</li>
+        <li>애니메이션 = 프레임 교체로 단순</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>픽셀 아트 단점</h4>
+      <ul>
+        <li>Retina/HiDPI에서 흐릿하지 않게 처리 까다로움 (image-rendering: pixelated 필수)</li>
+        <li>크기 변경 = 픽셀 깨짐, 미리 사이즈 정해야 함</li>
+        <li>새 동물 추가하려면 누군가 그려야 함 (Aseprite $20)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="pros-cons" style="margin-top:8px">
+    <div class="pros">
+      <h4>SVG 장점</h4>
+      <ul>
+        <li>무한 확대 (Retina, 4K 다 쨍함)</li>
+        <li>CSS transform/transition으로 애니메이션 직접 제어 (말풍선 따라 표정 변경 등)</li>
+        <li>색상 변경 동적 (다크/라이트 테마, 상태별 톤)</li>
+        <li>파일 크기 작음 (각 펫 5-20KB)</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>SVG 단점</h4>
+      <ul>
+        <li>"펫 같은" 친근함 < 픽셀 (모던/디지털한 느낌)</li>
+        <li>복잡한 애니메이션은 SVG 직접 그리기 어려움 → Lottie 도입 시 라이브러리 부담</li>
+        <li>좋은 무료 어셋이 픽셀보다 적음 (대부분 일러스트/아이콘 톤)</li>
+      </ul>
+    </div>
+  </div>
+
+  <p class="subtitle" style="margin-top:16px">개인적 추천: <strong>SVG로 시작</strong> (작은 카드 사이즈 + 다크/라이트 테마 + 동적 표정 변경에 유리). 후에 픽셀 테마를 옵션으로 추가하는 식. 다만 "Tamagotchi 감성"이 핵심이면 픽셀.</p>
+</div>
+
+<div class="section">
+  <h3>2. 펫 매핑 (작업 종류별)</h3>
+  <p class="subtitle">subagent가 어떤 작업을 하느냐에 따라 펫 종류가 달라져요. 메인 펫은 세션당 고정 (사용자가 고를 수도, 자동도 가능).</p>
+
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead>
+      <tr style="border-bottom:2px solid currentColor">
+        <th style="text-align:left;padding:8px">작업 종류</th>
+        <th style="text-align:left;padding:8px">Hook 이벤트</th>
+        <th style="text-align:left;padding:8px">제안 펫</th>
+        <th style="text-align:left;padding:8px">왜?</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">파일 읽기</td><td style="padding:8px"><code>Read</code></td><td style="padding:8px;font-size:24px">🐱</td><td style="padding:8px">고양이 = 조용히 관찰, 책 옆에 앉음</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">파일 쓰기/편집</td><td style="padding:8px"><code>Edit/Write</code></td><td style="padding:8px;font-size:24px">🐶</td><td style="padding:8px">강아지 = 꼬리 흔들며 열심</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">명령 실행</td><td style="padding:8px"><code>Bash</code></td><td style="padding:8px;font-size:24px">🦊</td><td style="padding:8px">여우 = 빠르고 영리, 일 빠르게 처리</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">검색</td><td style="padding:8px"><code>Grep/Glob</code></td><td style="padding:8px;font-size:24px">🦝</td><td style="padding:8px">너구리 = 구석구석 뒤짐</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">웹 검색/fetch</td><td style="padding:8px"><code>WebSearch/WebFetch</code></td><td style="padding:8px;font-size:24px">🦉</td><td style="padding:8px">부엉이 = 지식, 멀리 봄</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">서브에이전트 분배</td><td style="padding:8px"><code>Task</code></td><td style="padding:8px;font-size:24px">🐰</td><td style="padding:8px">토끼 = 무리 짓고 분담</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">노트북 편집</td><td style="padding:8px"><code>NotebookEdit</code></td><td style="padding:8px;font-size:24px">🐹</td><td style="padding:8px">햄스터 = 작은 셀 채움</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">권한 요청 대기</td><td style="padding:8px"><code>PermissionRequest</code></td><td style="padding:8px;font-size:24px">🐧</td><td style="padding:8px">펭귄 = 정중히 묻는 자세</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">에러</td><td style="padding:8px"><code>error</code></td><td style="padding:8px;font-size:24px">🦔</td><td style="padding:8px">고슴도치 = 놀라서 웅크림</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">완료</td><td style="padding:8px"><code>Stop</code></td><td style="padding:8px;font-size:24px">🐶</td><td style="padding:8px">강아지 = 꼬리 흔들며 자랑</td></tr>
+      <tr><td style="padding:8px">idle/sleep</td><td style="padding:8px"><code>idle</code></td><td style="padding:8px;font-size:24px">🐢</td><td style="padding:8px">거북이 = 느긋하게 쉼</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:13px;margin-top:8px;opacity:0.8"><em>이 매핑은 시작점일 뿐이에요. 다 마음에 안 드는 거 있으면 바꿔도 돼요. 메인 펫은 사용자가 직접 고르거나 cwd 해시로 자동 배정 가능.</em></p>
+</div>
+
+<div class="section">
+  <h3>3. 메시지 톤 (이모지 + 자연어)</h3>
+  <p class="subtitle">두 톤을 합치면 시각적 가독성(이모지) + 정확한 정보(자연어) 둘 다 살릴 수 있어요.</p>
+
+  <div style="display:flex;gap:12px;margin-top:8px">
+    <div style="flex:1;padding:12px;background:rgba(0,0,0,0.04);border-radius:8px">
+      <div class="label">예시 1: 단일 에이전트</div>
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px">
+        <span style="font-size:24px">🦊</span>
+        <div style="background:rgba(255,255,255,0.6);padding:8px 12px;border-radius:10px;font-size:12px">
+          <strong>⚡ Bash</strong><br>
+          <code>npm test</code> 돌리는 중...
+        </div>
+      </div>
+    </div>
+    <div style="flex:1;padding:12px;background:rgba(0,0,0,0.04);border-radius:8px">
+      <div class="label">예시 2: 팀 채팅</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        <div style="display:flex;gap:6px;align-items:flex-start">
+          <span style="font-size:18px">🐶</span>
+          <div style="background:rgba(255,255,255,0.6);padding:6px 10px;border-radius:8px;font-size:11px">
+            <strong>📖 Read</strong> player.rs 살펴볼게
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:flex-start">
+          <span style="font-size:18px">🦝</span>
+          <div style="background:rgba(255,255,255,0.6);padding:6px 10px;border-radius:8px;font-size:11px">
+            <strong>🔍 Grep</strong> "velocity" 찾는 중
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:flex-start">
+          <span style="font-size:18px">🦝</span>
+          <div style="background:rgba(255,255,255,0.6);padding:6px 10px;border-radius:8px;font-size:11px">
+            28번째 줄에서 발견!
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>4. 세션 닫힘 + 프로젝트 메모리</h3>
+  <pre style="font-family:'SF Mono',Menlo,monospace;font-size:12px;line-height:1.4;background:rgba(255,255,255,0.04);padding:16px;border-radius:8px;overflow-x:auto">
+세션 종료 시:
+  1. 카드 즉시 사라짐 (UI에서)
+  2. 채팅 히스토리 → ~/.clawd-pet/projects/{cwd-hash}.json 으로 저장
+     {
+       "cwd": "/Users/dorothy/clawd-on-desk",
+       "git_root": "/Users/dorothy/clawd-on-desk",
+       "last_seen": "2026-05-07T13:45:00Z",
+       "messages": [ ...최근 200개... ]
+     }
+
+같은 프로젝트에서 새 세션 시작 시:
+  1. cwd → git_root 우선으로 매칭 (없으면 그냥 cwd)
+  2. 해당 프로젝트의 messages 자동 로드
+  3. 카드 헤더에 "이전 대화 N개 불러옴" 배너 (5초 후 사라짐)
+  4. 새 메시지가 그 아래에 추가
+
+매칭 우선순위:
+  1순위: git remote URL 같음 (다른 워킹트리 / 클론에서도 같은 프로젝트로 인식)
+  2순위: git root 경로 같음
+  3순위: cwd 같음
+
+저장 정책:
+  - 메시지 최대 200개 (프로젝트당)
+  - 보관기간 30일 (이후 자동 삭제, 설정 가능)
+  - "이 프로젝트 기록 삭제" 메뉴 옵션</pre>
+  <p style="font-size:13px;margin-top:8px;opacity:0.8"><em>세션 ID는 매번 바뀌지만 cwd/git remote는 안정적이라 이게 자연스러운 키예요.</em></p>
+</div>
+
+<div class="section">
+  <h3>5. 사용자가 해야 할 것 (체크리스트)</h3>
+  <p class="subtitle">디자인 확정 후 실제 만들기 전에 정해야 할 것들.</p>
+
+  <ol style="font-size:13px;line-height:1.8">
+    <li><strong>미적 방향 픽 (지금 이 단계)</strong>
+      <ul>
+        <li>픽셀 아트 vs SVG vs 둘 다 (테마 토글)</li>
+        <li>전체 분위기: 귀여움 / 미니멀 / 레트로 / 모던</li>
+      </ul>
+    </li>
+    <li><strong>어셋 소싱</strong> — 결정한 스타일에 따라:
+      <ul>
+        <li><em>픽셀이면:</em> itch.io 무료팩 받거나, Aseprite($20)로 직접 그리거나, 픽셀 아티스트 발주 (Fiverr ~$30-100/캐릭터)</li>
+        <li><em>SVG면:</em> Figma로 직접 그리기, IconScout/LottieFiles 유료 구독, 또는 일러스트레이터 발주</li>
+        <li>최소 필요 펫: 8-10종 (위 매핑 표 참고) × 3-4 상태 (idle/working/happy/error) = 30-40 어셋</li>
+      </ul>
+    </li>
+    <li><strong>기술 스택 결정</strong>
+      <ul>
+        <li>Tauri (Rust+WebView, ~8MB) — Claude Pet 방식. 가벼움.</li>
+        <li>Electron (Node+Chromium, ~150MB) — Clawd 방식. 라이브러리 풍부.</li>
+        <li>웹 only (브라우저 탭) — 더 가벼움, 데스크탑 펫 정체성 약화</li>
+      </ul>
+    </li>
+    <li><strong>프로젝트 이름</strong> — `clawd-team`, `claude-zoo`, `pet-pack`, ...?</li>
+    <li><strong>리포지토리</strong> — GitHub repo 만들기, 라이센스(MIT?) 결정</li>
+    <li><strong>(선택) 디자이너 협업</strong> — 자체 그리실 거면 Figma/Aseprite 학습. 아니면 외주.</li>
+  </ol>
+</div>
+
+<p class="subtitle" style="margin-top:24px">위 1~5번 중 정하실 거 정해주시면 다음 단계로 가요. 특히 <strong>1번(픽셀 vs SVG)</strong>과 <strong>3번(기술 스택)</strong>이 우선이에요.</p>

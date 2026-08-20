@@ -1,0 +1,96 @@
+<h2>A. 빌딩 단면도 — 자세히</h2>
+<p class="subtitle">SimTower / Project Highrise 스타일을 우리 콘셉트("세션 = 층, subagent = 직원")에 매핑하면 어떤 모습이 될지 풀어볼게요.</p>
+
+<div class="section">
+  <h3>레퍼런스 비주얼</h3>
+  <p>먼저 두 게임이 실제로 어떻게 생겼는지 봐주세요 (외부 링크):</p>
+  <ul>
+    <li><a href="https://en.wikipedia.org/wiki/SimTower#/media/File:SimTower_screenshot.png" target="_blank">SimTower 스크린샷</a> — 1994년, 픽셀 단순, 사람들이 점으로 표현됨</li>
+    <li><a href="https://projecthighrise.fandom.com/wiki/Category:Screenshots" target="_blank">Project Highrise 스크린샷 모음</a> — 현대적, 디테일한 픽셀 아트</li>
+    <li><a href="https://store.steampowered.com/app/423580/Project_Highrise/" target="_blank">Project Highrise Steam 페이지</a> — 트레일러로 움직임 확인</li>
+  </ul>
+</div>
+
+<div class="section">
+  <h3>매핑: 게임 요소 → 우리 앱</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:14px">
+    <thead>
+      <tr style="border-bottom:2px solid currentColor">
+        <th style="text-align:left;padding:8px">빌딩 게임</th>
+        <th style="text-align:left;padding:8px">우리 앱</th>
+        <th style="text-align:left;padding:8px">데이터 출처</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">빌딩 한 채</td><td style="padding:8px">앱 창 하나</td><td style="padding:8px">고정</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">한 층의 사무실</td><td style="padding:8px">Claude Code 세션 하나</td><td style="padding:8px"><code>session_id</code></td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">사무실 간판</td><td style="padding:8px">cwd / git 브랜치 / 모델명</td><td style="padding:8px"><code>cwd</code>, <code>source_pid</code></td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">사무실 안 직원들</td><td style="padding:8px">main agent + subagent들</td><td style="padding:8px"><code>SubagentStart/Stop</code> 카운트</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">직원 책상 / 회의실</td><td style="padding:8px">현재 작업 종류 (typing, juggling, building)</td><td style="padding:8px">subagent 수 + state</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">엘리베이터</td><td style="padding:8px">(없어도 됨, 또는 사용자가 클릭하면 그 층 포커스)</td><td style="padding:8px">UI</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">로비</td><td style="padding:8px">전체 상태 요약 (활성 세션 N, 권한 대기 M)</td><td style="padding:8px">집계</td></tr>
+      <tr><td style="padding:8px">불 켜짐/꺼짐</td><td style="padding:8px">working / sleeping</td><td style="padding:8px">state machine</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>대략적인 모양 (ASCII 와이어프레임)</h3>
+  <pre style="font-family:'SF Mono',Menlo,monospace;font-size:12px;line-height:1.4;background:rgba(255,255,255,0.04);padding:16px;border-radius:8px;overflow-x:auto">
+┌─────────────────────────────────────────┐
+│  🏢 Clawd Tower         ⚙️ 4 active     │  ← 헤더 (집계)
+├─────────────────────────────────────────┤
+│ 5F │ clawd-on-desk       │ 💡 thinking  │  ← 사무실: 1명 앉아서 고민
+│    │ feat/pets           │  [👤]        │
+├─────────────────────────────────────────┤
+│ 4F │ blog                │ ⌨️ typing    │  ← 사무실: 1명 타이핑
+│    │ main                │  [👤·]       │
+├─────────────────────────────────────────┤
+│ 3F │ rust-game           │ 🤹 juggling  │  ← 사무실: 2명 협업
+│    │ wip                 │  [👤👤·]     │
+├─────────────────────────────────────────┤
+│ 2F │ infra               │ 🏗️ building  │  ← 사무실: 4명 + 작업물
+│    │ deploy              │  [👤👤👤👤]  │
+├─────────────────────────────────────────┤
+│ 1F │ docs                │ 💤 sleeping  │  ← 사무실: 불 꺼짐
+│    │ -                   │  [ z ]       │
+├─────────────────────────────────────────┤
+│ 🚪 Lobby                              ⚠️│  ← 권한 대기 알림
+└─────────────────────────────────────────┘</pre>
+</div>
+
+<div class="section">
+  <h3>장단점 정리</h3>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>장점</h4>
+      <ul>
+        <li>"각 세션 = 독립된 사무실"이 직관적 (격리감)</li>
+        <li>층 단위로 스크롤 = 세션 많아져도 자연스럽게 확장</li>
+        <li>cwd/branch를 "사무실 간판"처럼 표시하면 디렉토리 구분 쉬움</li>
+        <li>subagent 수에 따라 1명/2명/팀 시각화가 자연스러움</li>
+        <li>잘 알려진 메타포라 사용자가 첫 화면에서 바로 이해</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>단점</h4>
+      <ul>
+        <li>세로로 길어서 가로 넓은 모니터에서 공간 낭비</li>
+        <li>층마다 정보가 같아서 시각적 단조로움 가능 (해소: 층마다 다른 인테리어/색)</li>
+        <li>"빌딩"이 너무 무거운 메타포일 수도 (간단한 펫 → 진지한 회사 게임 분위기)</li>
+        <li>픽셀 아트 어셋 비용: SimTower/Highrise 수준 만들려면 일러스트 작업 큼</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>변형 아이디어</h3>
+  <ul>
+    <li><strong>가로형 빌딩</strong>: 단면도 90도 회전 → 넓은 모니터 친화. 층 = 칸 (도시 거리뷰처럼)</li>
+    <li><strong>주상복합</strong>: 층마다 종류 다름. 사무실(작업) + 카페(휴식, idle 세션) + 옥상(권한 알림 모임)</li>
+    <li><strong>유리 빌딩</strong>: 미니멀 톤. 픽셀 대신 깔끔한 벡터로 → Clawd 스타일과 톤 맞춤</li>
+  </ul>
+</div>
+
+<p class="subtitle" style="margin-top:24px">이 메타포가 끌리시면 더 구체적으로 들어갈게요 (예: 가로/세로 어느 쪽? 픽셀 vs 벡터? 어셈 톤?). 다른 메타포 더 보고 싶으면 말씀하세요.</p>

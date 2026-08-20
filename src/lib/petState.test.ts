@@ -35,4 +35,27 @@ describe("mapSessionToPetState", () => {
       mapSessionToPetState("idle", now - RELIEVED_WINDOW_MS, now),
     ).toBe("relieved");
   });
+
+  // 백그라운드로 넘긴 일을 기다리는 구간 — 자는 게 아니라 대기.
+  it("idle with background work → waiting", () => {
+    expect(mapSessionToPetState("idle", undefined, now, true)).toBe("waiting");
+  });
+
+  it("idle with background work but still in relieved window → relieved", () => {
+    expect(mapSessionToPetState("idle", now - 1000, now, true)).toBe("relieved");
+  });
+
+  it("idle with background work after relieved window → waiting", () => {
+    expect(
+      mapSessionToPetState("idle", now - RELIEVED_WINDOW_MS - 1, now, true),
+    ).toBe("waiting");
+  });
+
+  it("working with background work → typing (메인이 일하면 대기가 아니다)", () => {
+    expect(mapSessionToPetState("working", undefined, now, true)).toBe("typing");
+  });
+
+  it("permission with background work → surprised (물어보는 게 우선)", () => {
+    expect(mapSessionToPetState("permission", undefined, now, true)).toBe("surprised");
+  });
 });

@@ -1,0 +1,220 @@
+<h2>컨셉: 옆으로 나열된 펫 + 대화 채팅</h2>
+<p class="subtitle">세션 = 작은 카드, 카드 안에 펫(들). 단일 에이전트면 말풍선 1개, 서브에이전트 팀이면 채팅 대화. 길어지면 그 카드만 스크롤.</p>
+
+<style>
+  .pet-row {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    padding: 8px 4px 16px 4px;
+    background: rgba(0,0,0,0.04);
+    border-radius: 12px;
+  }
+  .session-card {
+    flex: 0 0 240px;
+    background: var(--card-bg, #fff);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 12px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    height: 320px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  }
+  .session-card.dark { background: #1f2937; color: #f3f4f6; border-color: rgba(255,255,255,0.1); }
+  .session-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    opacity: 0.7;
+    border-bottom: 1px dashed rgba(0,0,0,0.1);
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+  }
+  .session-card.dark .session-header { border-color: rgba(255,255,255,0.1); }
+  .session-title { font-weight: 600; font-family: 'SF Mono', Menlo, monospace; }
+  .session-status { font-size: 16px; }
+  .pet-stage {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-right: 4px;
+  }
+  .pet-stage::-webkit-scrollbar { width: 4px; }
+  .pet-stage::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 2px; }
+
+  /* Single pet idle */
+  .single-pet {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex: 1;
+    padding: 8px;
+  }
+  .pet-emoji { font-size: 56px; line-height: 1; }
+  .pet-emoji.tiny { font-size: 28px; }
+  .speech-bubble {
+    background: rgba(0,0,0,0.06);
+    padding: 8px 12px;
+    border-radius: 14px;
+    font-size: 12px;
+    line-height: 1.4;
+    text-align: center;
+    max-width: 95%;
+  }
+  .session-card.dark .speech-bubble { background: rgba(255,255,255,0.1); }
+
+  /* Chat style */
+  .chat-msg {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+  }
+  .chat-msg .pet-avatar { font-size: 20px; flex-shrink: 0; line-height: 1.2; }
+  .chat-msg .chat-bubble {
+    background: rgba(0,0,0,0.06);
+    padding: 6px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    line-height: 1.4;
+    flex: 1;
+  }
+  .chat-msg .chat-name { font-weight: 600; font-size: 10px; opacity: 0.7; display: block; margin-bottom: 2px; }
+  .session-card.dark .chat-bubble { background: rgba(255,255,255,0.08); }
+  .chat-msg.error .chat-bubble { background: rgba(239,68,68,0.15); }
+  .chat-msg.permission .chat-bubble { background: rgba(245,158,11,0.2); }
+
+  /* Sleeping */
+  .pet-sleeping { opacity: 0.5; filter: grayscale(0.3); }
+</style>
+
+<div class="section">
+  <h3>레이아웃 mockup</h3>
+  <div class="pet-row">
+
+    <!-- Session 1: Single agent -->
+    <div class="session-card">
+      <div class="session-header">
+        <span class="session-title">clawd-on-desk</span>
+        <span class="session-status">⌨️</span>
+      </div>
+      <div class="pet-stage">
+        <div class="single-pet">
+          <div class="pet-emoji">🐶</div>
+          <div class="speech-bubble">
+            <strong>Bash</strong><br>
+            <code style="font-size:10px">npm test</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session 2: Team chat (scrollable) -->
+    <div class="session-card">
+      <div class="session-header">
+        <span class="session-title">rust-game</span>
+        <span class="session-status">🤹 3 agents</span>
+      </div>
+      <div class="pet-stage">
+        <div class="chat-msg">
+          <span class="pet-avatar">🐶</span>
+          <div class="chat-bubble"><span class="chat-name">main</span>플레이어 이동 버그 찾아줘</div>
+        </div>
+        <div class="chat-msg">
+          <span class="pet-avatar">🐱</span>
+          <div class="chat-bubble"><span class="chat-name">explorer</span>📖 player.rs 읽는 중...</div>
+        </div>
+        <div class="chat-msg">
+          <span class="pet-avatar">🐰</span>
+          <div class="chat-bubble"><span class="chat-name">explorer-2</span>🔍 "velocity" 검색 중</div>
+        </div>
+        <div class="chat-msg">
+          <span class="pet-avatar">🐱</span>
+          <div class="chat-bubble"><span class="chat-name">explorer</span>찾았다! 28번째 줄</div>
+        </div>
+        <div class="chat-msg">
+          <span class="pet-avatar">🐶</span>
+          <div class="chat-bubble"><span class="chat-name">main</span>✍️ 수정 중</div>
+        </div>
+        <div class="chat-msg permission">
+          <span class="pet-avatar">🐶</span>
+          <div class="chat-bubble"><span class="chat-name">main</span>⚠️ Bash 실행 권한 줄까요?</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session 3: Idle -->
+    <div class="session-card">
+      <div class="session-header">
+        <span class="session-title">blog</span>
+        <span class="session-status">💤</span>
+      </div>
+      <div class="pet-stage">
+        <div class="single-pet">
+          <div class="pet-emoji pet-sleeping">🐹</div>
+          <div class="speech-bubble" style="opacity:0.5">zzz...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session 4: Error -->
+    <div class="session-card dark">
+      <div class="session-header">
+        <span class="session-title">infra</span>
+        <span class="session-status">😰</span>
+      </div>
+      <div class="pet-stage">
+        <div class="chat-msg">
+          <span class="pet-avatar">🐺</span>
+          <div class="chat-bubble"><span class="chat-name">main</span>⚡ kubectl apply</div>
+        </div>
+        <div class="chat-msg error">
+          <span class="pet-avatar">🐺</span>
+          <div class="chat-bubble"><span class="chat-name">main</span>❌ Error: namespace not found</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <p style="font-size:13px;opacity:0.7;margin-top:8px"><em>↔ 가로로 더 많은 세션이 있을 때 카드 영역 자체가 스크롤. 각 카드 안의 채팅도 길어지면 그 카드만 세로 스크롤.</em></p>
+</div>
+
+<div class="section">
+  <h3>핵심 동작 정리</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead>
+      <tr style="border-bottom:2px solid currentColor">
+        <th style="text-align:left;padding:8px">상황</th>
+        <th style="text-align:left;padding:8px">표시</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">에이전트 1명, idle</td><td style="padding:8px">펫 큰 사이즈, "zzz..." 말풍선</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">에이전트 1명, 작업 중</td><td style="padding:8px">펫 큰 사이즈 + 도구명/내용 말풍선 (예: "📖 reading foo.ts")</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">에이전트 1명 → subagent 시작</td><td style="padding:8px">큰 펫 → 작은 채팅 모드로 전환, main + sub 두 줄</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">subagent 다수 (2+)</td><td style="padding:8px">계속 채팅. 새 메시지 = 자동 맨 아래로 스크롤</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">에러</td><td style="padding:8px">빨간 채팅 풍선, 카드 헤더 😰</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:8px">권한 요청</td><td style="padding:8px">노란 채팅 풍선, 헤더 ⚠️ + 클릭 시 Allow/Deny</td></tr>
+      <tr><td style="padding:8px">subagent 모두 종료</td><td style="padding:8px">채팅 → 다시 큰 펫 1마리로 복귀 (마지막 메시지는 말풍선으로)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>구현 가능성</h3>
+  <ul>
+    <li>✅ 옆으로 나열 + 가로 스크롤: flex + overflow-x</li>
+    <li>✅ 각 카드 안 세로 스크롤: overflow-y: auto, 새 메시지마다 scrollTop = scrollHeight</li>
+    <li>✅ 펫 종류 다양화: subagent마다 다른 동물 이모지/스프라이트 자동 할당 (해시 기반 → 같은 agent_id면 항상 같은 펫)</li>
+    <li>✅ 데이터 출처: hook이 이미 session_id, subagent_id, tool_name, tool_input 다 줌</li>
+    <li>⚠️ 메시지 텍스트는 hook 이벤트를 자연어로 변환 필요 (예: <code>Bash + npm test</code> → "⚡ npm test")</li>
+    <li>⚠️ subagent의 "이름"은 hook에 안 나옴 — 자동 라벨(explorer-1, worker-A) 부여 필요</li>
+  </ul>
+</div>
+
+<p class="subtitle" style="margin-top:24px">이 컨셉이면 <strong>Claude Pet의 옆으로 나열</strong> + <strong>Clawd의 펫 캐릭터</strong> + <strong>채팅 비주얼</strong> 합친 형태예요. 이대로 갈까요? 아니면 펫 디자인이나 채팅 톤(이모지 vs 자연어 vs 둘 다)부터 더 구체화할까요?</p>

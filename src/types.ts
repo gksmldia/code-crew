@@ -9,7 +9,7 @@ export type SessionState = "idle" | "working" | "error" | "permission";
  */
 export type PetType = string;
 
-export type PetState = "sleeping" | "typing" | "surprised" | "disappointed" | "relieved";
+export type PetState = "sleeping" | "typing" | "waiting" | "surprised" | "disappointed" | "relieved";
 
 export type AgentType = "claude" | "codex";
 

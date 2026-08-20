@@ -22,6 +22,7 @@ function fallbackBreedId(animal: string): string {
 const ANIM_CLASS: Record<PetState, string> = {
   sleeping:     "pet-anim-sleeping",
   typing:       "pet-anim-typing",
+  waiting:      "pet-anim-waiting",
   surprised:    "pet-anim-surprised",
   disappointed: "pet-anim-disappointed",
   relieved:     "pet-anim-relieved",
@@ -58,6 +59,17 @@ export function Pet({ animal, state, size = "lg" }: PetProps) {
         }}
         draggable={false}
       />
+      {/* 답변 대기 중 표시. 권한 분기의 부모가 overflow를 자르므로 박스 밖으로
+          내지 않고 우상단 여백 안에 둔다. */}
+      {state === "waiting" && (
+        <span
+          className="pet-hourglass absolute top-0 right-0 leading-none pointer-events-none select-none"
+          style={{ fontSize: Math.round(dim * 0.24) }}
+          aria-hidden
+        >
+          ⏳
+        </span>
+      )}
     </div>
   );
 }

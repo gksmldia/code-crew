@@ -60,10 +60,13 @@ export function PetCard({ session }: PetCardProps) {
     return () => clearTimeout(id);
   }, [session.justFinishedAt]);
 
+  // 메인은 놀고 있는데 백그라운드 작업이 남아 있는 구간 — 자는 게 아니라 대기 중.
+  const waitingOnBackground = session.state === "idle" && session.backgroundTasks.length > 0;
   const petState: PetState = mapSessionToPetState(
     session.state,
     session.justFinishedAt,
     nowTick,
+    session.backgroundTasks.length > 0,
   );
 
   const reorderSessions = useStore((s) => s.reorderSessions);
@@ -174,7 +177,8 @@ export function PetCard({ session }: PetCardProps) {
               ⏳ {session.backgroundTasks.length}
             </span>
           )}
-          <span>{statusEmoji(session.state)}</span>
+          {/* 대기 중엔 바로 옆 ⏳ 뱃지가 이미 상태를 말해준다 — 💤을 겹쳐 띄우지 않는다. */}
+          {!waitingOnBackground && <span>{statusEmoji(session.state)}</span>}
           <button
             onClick={(e) => { e.stopPropagation(); removeSession(session.sessionId); }}
             onMouseDown={(e) => e.stopPropagation()}

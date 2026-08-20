@@ -1,0 +1,201 @@
+<h2>최종 디자인 요약</h2>
+<p class="subtitle">지금까지 결정한 것 + 합리적 기본값으로 채운 것을 한 화면에 정리. 검토 후 OK 주시면 spec 문서로 옮길게요.</p>
+
+<div class="section">
+  <h3>1. 한 줄 정의</h3>
+  <p style="font-size:15px;line-height:1.6;background:rgba(255,255,255,0.05);padding:14px;border-radius:8px;border-left:4px solid #60a5fa">
+    <strong>Claude Code 세션을 옆으로 나열하는 SVG 펫 데스크탑 위젯.</strong> 세션 하나 = 펫 카드 한 장. 단일 에이전트는 큰 펫 + 말풍선, 서브에이전트가 도는 동안엔 그 카드가 펫들의 채팅창이 됨. 같은 프로젝트(git remote/cwd)는 이전 대화 자동 복원.
+  </p>
+</div>
+
+<div class="section">
+  <h3>2. 프로젝트 이름 제안</h3>
+  <div class="options">
+    <div class="option" data-choice="pack" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>clawd-pack</h3>
+        <p>Clawd 가족 컨셉, "팩"=무리 의미가 다중 펫과 잘 맞음</p>
+      </div>
+    </div>
+    <div class="option" data-choice="zoo" onclick="toggleSelect(this)">
+      <div class="letter">B</div>
+      <div class="content">
+        <h3>claude-zoo</h3>
+        <p>다양한 동물이 모인 동물원 느낌, 작업별 다른 펫과 어울림</p>
+      </div>
+    </div>
+    <div class="option" data-choice="crew" onclick="toggleSelect(this)">
+      <div class="letter">C</div>
+      <div class="content">
+        <h3>code-crew</h3>
+        <p>"크루"=팀 작업 강조, 채팅/협업 컨셉과 잘 맞음</p>
+      </div>
+    </div>
+    <div class="option" data-choice="other" onclick="toggleSelect(this)">
+      <div class="letter">D</div>
+      <div class="content">
+        <h3>다른 이름 제안</h3>
+        <p>터미널에 직접 입력해주세요</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>3. UI 레이아웃 (최종 mockup)</h3>
+  <div style="background:rgba(0,0,0,0.04);border-radius:12px;padding:12px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:11px;opacity:0.6">
+      <span>🐾 ___ — 4 sessions</span>
+      <span>⚙️</span>
+    </div>
+    <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px">
+      <!-- Card 1: Single -->
+      <div style="flex:0 0 200px;background:#fff;border-radius:10px;padding:10px;border:1px solid rgba(0,0,0,0.08);height:240px;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;font-size:10px;opacity:0.7;border-bottom:1px dashed rgba(0,0,0,0.1);padding-bottom:4px;margin-bottom:8px">
+          <span style="font-family:monospace;font-weight:600">clawd-on-desk</span>
+          <span>⌨️</span>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px">
+          <svg viewBox="0 0 50 50" style="width:64px;height:64px">
+            <ellipse cx="25" cy="35" rx="18" ry="14" fill="#a78bfa"/>
+            <ellipse cx="9" cy="30" rx="6" ry="10" fill="#8b5cf6"/>
+            <ellipse cx="41" cy="30" rx="6" ry="10" fill="#8b5cf6"/>
+            <circle cx="19" cy="30" r="2" fill="#1f2937"/>
+            <circle cx="31" cy="30" r="2" fill="#1f2937"/>
+            <ellipse cx="25" cy="38" rx="3" ry="2" fill="#1f2937"/>
+          </svg>
+          <div style="background:rgba(0,0,0,0.06);padding:6px 10px;border-radius:10px;font-size:10px;text-align:center">
+            <strong>⚡ Bash</strong><br>
+            <code style="font-size:9px">npm test</code>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Team chat -->
+      <div style="flex:0 0 200px;background:#fff;border-radius:10px;padding:10px;border:1px solid rgba(0,0,0,0.08);height:240px;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;font-size:10px;opacity:0.7;border-bottom:1px dashed rgba(0,0,0,0.1);padding-bottom:4px;margin-bottom:8px">
+          <span style="font-family:monospace;font-weight:600">rust-game</span>
+          <span>🤹 3</span>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:5px;overflow-y:auto;font-size:10px">
+          <div style="display:flex;gap:4px"><span>🐶</span><div style="background:rgba(0,0,0,0.05);padding:4px 6px;border-radius:6px;flex:1">버그 찾아줘</div></div>
+          <div style="display:flex;gap:4px"><span>🐱</span><div style="background:rgba(0,0,0,0.05);padding:4px 6px;border-radius:6px;flex:1"><strong>📖</strong> player.rs</div></div>
+          <div style="display:flex;gap:4px"><span>🦝</span><div style="background:rgba(0,0,0,0.05);padding:4px 6px;border-radius:6px;flex:1"><strong>🔍</strong> "velocity"</div></div>
+          <div style="display:flex;gap:4px"><span>🐱</span><div style="background:rgba(0,0,0,0.05);padding:4px 6px;border-radius:6px;flex:1">28번째 줄!</div></div>
+          <div style="display:flex;gap:4px"><span>🐶</span><div style="background:rgba(245,158,11,0.2);padding:4px 6px;border-radius:6px;flex:1"><strong>⚠️</strong> Bash 권한?</div></div>
+        </div>
+      </div>
+
+      <!-- Card 3: Idle -->
+      <div style="flex:0 0 200px;background:#fff;border-radius:10px;padding:10px;border:1px solid rgba(0,0,0,0.08);height:240px;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;font-size:10px;opacity:0.7;border-bottom:1px dashed rgba(0,0,0,0.1);padding-bottom:4px;margin-bottom:8px">
+          <span style="font-family:monospace;font-weight:600">blog</span>
+          <span>💤</span>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;opacity:0.5">
+          <svg viewBox="0 0 50 50" style="width:60px;height:60px">
+            <ellipse cx="25" cy="35" rx="16" ry="12" fill="#fbbf24"/>
+            <circle cx="20" cy="32" r="1.5" fill="#1f2937"/>
+            <circle cx="30" cy="32" r="1.5" fill="#1f2937"/>
+            <path d="M 22 36 Q 25 38 28 36" stroke="#1f2937" stroke-width="1.5" fill="none"/>
+          </svg>
+          <div style="font-size:10px">zzz...</div>
+        </div>
+      </div>
+
+      <!-- Card 4: Error (dark) -->
+      <div style="flex:0 0 200px;background:#1f2937;color:#f3f4f6;border-radius:10px;padding:10px;height:240px;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;font-size:10px;opacity:0.7;border-bottom:1px dashed rgba(255,255,255,0.1);padding-bottom:4px;margin-bottom:8px">
+          <span style="font-family:monospace;font-weight:600">infra</span>
+          <span>😰</span>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:5px;font-size:10px">
+          <div style="display:flex;gap:4px"><span>🦊</span><div style="background:rgba(255,255,255,0.08);padding:4px 6px;border-radius:6px;flex:1"><strong>⚡</strong> kubectl apply</div></div>
+          <div style="display:flex;gap:4px"><span>🦔</span><div style="background:rgba(239,68,68,0.25);padding:4px 6px;border-radius:6px;flex:1">❌ namespace not found</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>4. 아키텍처 (데이터 흐름)</h3>
+  <pre style="font-family:'SF Mono',Menlo,monospace;font-size:11px;line-height:1.5;background:rgba(255,255,255,0.04);padding:14px;border-radius:8px;overflow-x:auto">
+┌─────────────────┐  hook   ┌───────────────────┐  IPC   ┌────────────────┐
+│  Claude Code    │ ──────▶ │  Tauri Backend    │ ─────▶ │  React UI      │
+│  (PreToolUse,   │  HTTP   │  (Rust)           │ event  │  (webview)     │
+│   PostToolUse,  │ POST    │  - HTTP server    │        │  - SessionList │
+│   Subagent*,    │ :19876  │  - Session store  │        │  - PetCard     │
+│   Stop, etc.)   │         │  - Project FS r/w │        │  - ChatStream  │
+└─────────────────┘         └───────────────────┘        └────────────────┘
+                                     │
+                                     ▼
+                              ~/.{name}/projects/
+                                {cwd-hash}.json
+                                (이전 대화 200개, 30일 보관)</pre>
+</div>
+
+<div class="section">
+  <h3>5. 핵심 컴포넌트</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="border-bottom:2px solid currentColor">
+      <th style="text-align:left;padding:6px">레이어</th>
+      <th style="text-align:left;padding:6px">파일</th>
+      <th style="text-align:left;padding:6px">역할</th>
+    </tr></thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">Rust</td><td style="padding:6px"><code>src-tauri/src/main.rs</code></td><td style="padding:6px">앱 진입점, 윈도우 생성, 트레이</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">Rust</td><td style="padding:6px"><code>src-tauri/src/server.rs</code></td><td style="padding:6px">HTTP 서버 :19876 (hook 수신)</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">Rust</td><td style="padding:6px"><code>src-tauri/src/storage.rs</code></td><td style="padding:6px">프로젝트별 히스토리 r/w + 30일 정리</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">Rust</td><td style="padding:6px"><code>src-tauri/src/hook_install.rs</code></td><td style="padding:6px">~/.claude/settings.json hook 등록</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">Rust</td><td style="padding:6px"><code>src-tauri/binaries/{name}-hook</code></td><td style="padding:6px">stdin JSON → POST :19876 (zero-dep 바이너리)</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">React</td><td style="padding:6px"><code>src/App.tsx</code></td><td style="padding:6px">루트, Tauri 이벤트 listen → store 업데이트</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">React</td><td style="padding:6px"><code>src/store.ts</code></td><td style="padding:6px">Zustand: sessions Map, projects history</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">React</td><td style="padding:6px"><code>src/components/SessionRow.tsx</code></td><td style="padding:6px">가로 스크롤 컨테이너</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">React</td><td style="padding:6px"><code>src/components/PetCard.tsx</code></td><td style="padding:6px">단일/팀 분기 + 채팅 스크롤</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">React</td><td style="padding:6px"><code>src/components/Pet.tsx</code></td><td style="padding:6px">SVG 펫 (작업 종류 → 스프라이트)</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">React</td><td style="padding:6px"><code>src/components/SpeechBubble.tsx</code></td><td style="padding:6px">단일 모드 말풍선</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px">React</td><td style="padding:6px"><code>src/components/ChatMessage.tsx</code></td><td style="padding:6px">팀 채팅 한 줄</td></tr>
+      <tr><td style="padding:6px">SVG</td><td style="padding:6px"><code>src/assets/pets/*.svg</code></td><td style="padding:6px">10종 (cat/dog/fox/raccoon/owl/rabbit/hamster/penguin/hedgehog/turtle) × 3-4 상태</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h3>6. 합리적 기본값 (질문 안 하고 정한 것들)</h3>
+  <ul style="font-size:13px;line-height:1.7">
+    <li>윈도우: <strong>frameless + transparent + always-on-top + draggable</strong>, 좌하단 시작, 위치 저장</li>
+    <li>크기: <strong>가로 풀폭, 세로 280px</strong> (카드 높이 240 + 헤더). 사용자 리사이즈 가능</li>
+    <li>테마: <strong>시스템 자동</strong> (다크/라이트), 우클릭으로 강제 전환 가능</li>
+    <li>권한 요청: <strong>채팅 안 인라인</strong> + 카드 헤더에 ⚠️ 배지. 클릭으로 Allow/Deny</li>
+    <li>Subagent 라벨: <strong>해시 기반 동물 이름</strong> (foxy, hammy 같은 식)</li>
+    <li>지원 범위: <strong>Claude Code 만</strong> (Codex/Gemini는 v2에서 검토)</li>
+    <li>라이센스: <strong>MIT</strong></li>
+    <li>패키지: <strong>macOS DMG 우선</strong>, Win/Linux는 추후</li>
+  </ul>
+</div>
+
+<div class="section">
+  <h3>7. 기술 스택 (확정)</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <tbody>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px;width:30%"><strong>Shell</strong></td><td style="padding:6px">Tauri 2 (Rust)</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px"><strong>UI</strong></td><td style="padding:6px">React 18 + Vite + TypeScript</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px"><strong>Styling</strong></td><td style="padding:6px">TailwindCSS</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px"><strong>Animation</strong></td><td style="padding:6px">framer-motion (펫 애니메이션, 채팅 등장)</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px"><strong>State</strong></td><td style="padding:6px">Zustand</td></tr>
+      <tr style="border-bottom:1px solid #4443"><td style="padding:6px"><strong>Storage</strong></td><td style="padding:6px">Tauri FS plugin → JSON 파일</td></tr>
+      <tr><td style="padding:6px"><strong>Build</strong></td><td style="padding:6px">tauri-action (GitHub Releases)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section" style="background:rgba(96,165,250,0.1);padding:16px;border-radius:8px;border-left:4px solid #60a5fa">
+  <h3 style="margin-top:0">검토 부탁</h3>
+  <ol style="font-size:13px;line-height:1.8;margin-bottom:0">
+    <li><strong>프로젝트 이름</strong>: A/B/C 중 픽 또는 D로 새 이름</li>
+    <li><strong>6번 기본값</strong> 중에 바꾸고 싶은 거 있으면 말씀</li>
+    <li><strong>전체 디자인</strong> OK면 spec 문서로 정리해서 <code>clawd-work/docs/superpowers/specs/</code>에 저장할게요</li>
+  </ol>
+</div>
