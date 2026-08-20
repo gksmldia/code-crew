@@ -8,9 +8,12 @@
   50%      { transform: rotate( 8deg); }
 }
 
+/* 일하는 자세(pet-typing)와 같은 좌우 흔들림이지만 폭은 좁고 느리다.
+   양끝에서 잠시 멈춰 "언제 오나" 하고 기다리는 느낌을 준다. */
 @keyframes pet-waiting {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-1px); }
+  0%,   8% { transform: rotate(-3deg); }
+  42%, 58% { transform: rotate( 3deg); }
+  92%, 100% { transform: rotate(-3deg); }
 }
 
 @keyframes pet-hourglass-float {
@@ -57,12 +60,14 @@
 }
 
 .pet-anim-waiting {
-  animation: pet-waiting 1.8s ease-in-out infinite;
+  animation: pet-waiting 2.4s ease-in-out infinite;
+  transform-origin: 50% 100%;
   will-change: transform;
 }
 
+/* 흔들림과 같은 박자로 떠오르게 주기를 맞춘다 (기울인 채로 모래시계가 뜬다). */
 .pet-hourglass {
-  animation: pet-hourglass-float 1.8s ease-in-out infinite;
+  animation: pet-hourglass-float 2.4s ease-in-out infinite;
   will-change: transform;
 }
 
