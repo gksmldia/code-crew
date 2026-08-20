@@ -691,6 +691,13 @@ fn map_codex_line(
                     subagent_type: label,
                     transcript_path: Some(path_str),
                 })
+            } else if parent_for_path.is_some() {
+                // fork로 만들어진 서브에이전트 rollout에는 원본(부모) 스레드의
+                // session_meta가 그대로 한 번 더 복제돼 들어온다. 그 줄에는
+                // parent_thread_id가 없어 새 세션처럼 보이지만, 이 파일이
+                // 서브에이전트라는 건 앞줄에서 이미 확인했다. 여기서 SessionStart를
+                // 내면 메시지 없는 유령 카드가 하나 더 생긴다.
+                None
             } else {
                 Some(Event::SessionStart {
                     session_id: session_id.to_string(),
@@ -1055,6 +1062,55 @@ mod tests {
         assert!(matches!(
             &events[2],
             Event::SubagentStop { session_id, .. } if session_id == "parent-id"
+        ));
+    }
+
+    // Codex가 spawn_agent로 만든 rollout은 부모 스레드의 fork라서 부모의
+    // session_meta까지 복제해 담는다. 그 줄을 새 세션으로 받으면 메시지 없는
+    // 유령 카드가 하나 더 떴다.
+    #[test]
+    fn forked_parent_session_meta_does_not_create_second_card() {
+        let path = Path::new("/x/rollout-child.jsonl");
+        let mut pm = HashMap::new();
+        let child_meta = json!({
+            "type": "session_meta",
+            "payload": {
+                "id": "child-id",
+                "cwd": "/tmp/proj",
+                "thread_source": "subagent",
+                "source": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": "parent-id",
+                            "agent_nickname": "Kierkegaard",
+                            "agent_role": "code-mapper"
+                        }
+                    }
+                }
+            }
+        });
+        let forked_parent_meta = json!({
+            "type": "session_meta",
+            "payload": {
+                "id": "parent-id",
+                "cwd": "/tmp/proj",
+                "thread_source": "user",
+                "source": "vscode"
+            }
+        });
+
+        let events = [child_meta, forked_parent_meta]
+            .iter()
+            .filter_map(|value| {
+                map_codex_line("child-id", path, value, &mut pm, Some(4242))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            Event::SubagentStart { session_id, subagent_type, .. }
+                if session_id == "parent-id" && subagent_type == "Kierkegaard"
         ));
     }
 
