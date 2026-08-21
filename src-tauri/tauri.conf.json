@@ -38,7 +38,8 @@
     "createUpdaterArtifacts": true,
     "targets": "all",
     "macOS": {
-      "signingIdentity": "code-crew signing"
+      "signingIdentity": "code-crew signing",
+      "hardenedRuntime": false
     },
     "icon": [
       "icons/32x32.png",
