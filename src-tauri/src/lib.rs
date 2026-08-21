@@ -975,6 +975,48 @@ fn transcript_status(path: String) -> transcript::TranscriptStatus {
     transcript::status(std::path::Path::new(&path))
 }
 
+/// 인앱 업데이트 후 재실행. Tauri의 `relaunch()`를 쓰지 않는 이유가 있다.
+///
+/// `tauri::process::restart()`는 새 프로세스를 그냥 `spawn()`하고 부모가 바로 종료한다.
+/// 그러면 새 프로세스가 LaunchAgent 잡과 **같은 프로세스 그룹의 자식**이 되는데,
+/// launchd는 잡의 주 프로세스가 죽으면 같은 그룹을 통째로 죽인다
+/// (`launchd.plist(5)`의 `AbandonProcessGroup`, 기본 false). 그래서 새 인스턴스도 같이 사라진다.
+///
+/// 그래서 unix에서는 ① 새 프로세스 그룹으로 띄우고 ② 현재 프로세스가 완전히 끝난 뒤에
+/// 실행되게 한다. ②가 필요한 건 single-instance 소켓 정리가 종료 시점(`RunEvent::Exit`)에
+/// 일어나기 때문 — 먼저 뜨면 새 인스턴스가 기존 소켓에 붙어 스스로 종료해버린다.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; exec "$2""#)
+            .arg("sh")
+            .arg(std::process::id().to_string())
+            .arg(&exe)
+            .process_group(0);
+
+        // spawn이 실패하면 종료하지 않는다 — 앱이 사라지는 것보다 낫다.
+        if command.spawn().is_err() {
+            return;
+        }
+
+        app.exit(0);
+    }
+
+    // Windows는 launchd가 없어 프로세스 그룹 문제가 없다. 기본 경로를 그대로 쓴다.
+    #[cfg(not(unix))]
+    app.request_restart();
+}
+
 #[cfg(target_os = "windows")]
 fn process_alive(pid: u32) -> bool {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -1056,6 +1098,7 @@ pub fn run() {
             focus_codex_session,
             is_process_alive,
             transcript_status,
+            restart_app,
         ])
         // Intercept window close so the app survives any code path that
         // calls `getCurrentWindow().close()` (header × button, devtools,

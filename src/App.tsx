@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { useStore } from "./store";
 import { PetCard } from "./components/PetCard";
@@ -91,7 +90,8 @@ function App() {
     setUpdateState({ kind: "installing" });
     try {
       await update.downloadAndInstall();
-      await relaunch();
+      // Tauri의 relaunch() 대신 자체 커맨드. LaunchAgent 프로세스 그룹 문제 회피(lib.rs `restart_app`).
+      await invoke("restart_app");
     } catch {
       setUpdateState({ kind: "available", version: update.version });
     }
