@@ -461,17 +461,26 @@ fn parse_escalated_exec_object(object: &str) -> Option<Value> {
             break;
         }
 
-        let key_start = index;
-        while bytes
-            .get(index)
-            .is_some_and(|byte| is_js_identifier_byte(*byte))
-        {
-            index += 1;
-        }
-        if key_start == index {
-            return None;
-        }
-        let key = std::str::from_utf8(&bytes[key_start..index]).ok()?;
+        let key = if bytes.get(index) == Some(&b'"') {
+            let key_end = skip_js_string(bytes, index);
+            let key = parse_js_string(object.get(index..key_end)?)?;
+            index = key_end;
+            key
+        } else {
+            let key_start = index;
+            while bytes
+                .get(index)
+                .is_some_and(|byte| is_js_identifier_byte(*byte))
+            {
+                index += 1;
+            }
+            if key_start == index {
+                return None;
+            }
+            std::str::from_utf8(&bytes[key_start..index])
+                .ok()?
+                .to_string()
+        };
         index = skip_js_whitespace_and_comments(bytes, index);
         if bytes.get(index) != Some(&b':') {
             return None;
@@ -480,8 +489,8 @@ fn parse_escalated_exec_object(object: &str) -> Option<Value> {
         let value_start = index;
         let value_end = find_js_value_end(bytes, index)?;
         let value = object[value_start..value_end].trim();
-        if let Some(value) = parse_exec_argument_value(key, value) {
-            tool_input.insert(key.to_string(), value);
+        if let Some(value) = parse_exec_argument_value(&key, value) {
+            tool_input.insert(key, value);
         }
         index = skip_js_whitespace_and_comments(bytes, value_end);
         match bytes.get(index) {
@@ -965,6 +974,40 @@ mod tests {
                 ..
             } => {
                 assert_eq!(request_id, "codex-outer-call");
+                assert_eq!(tool_name, "exec_command");
+                assert_eq!(tool_input["cmd"], "git status");
+                assert_eq!(tool_input["justification"], "Inspect the working tree");
+                assert_eq!(tool_input["prefix_rule"], json!(["git", "status"]));
+                assert_eq!(tool_input["sandbox_permissions"], "require_escalated");
+            }
+            _ => panic!("expected nested PermissionRequest"),
+        }
+    }
+
+    #[test]
+    fn custom_exec_with_json_quoted_keys_adds_permission_request() {
+        let input = r#"await tools.exec_command({"cmd":"git status","justification":"Inspect the working tree","prefix_rule":["git","status"],"sandbox_permissions":"require_escalated"});"#;
+        let v = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "input": input,
+                "call_id": "quoted-keys"
+            }
+        });
+        let mut pm = HashMap::new();
+        let events = map_codex_events("s1", Path::new("/x/r.jsonl"), &v, &mut pm, None);
+
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            Event::PermissionRequest {
+                request_id,
+                tool_name,
+                tool_input,
+                ..
+            } => {
+                assert_eq!(request_id, "codex-quoted-keys");
                 assert_eq!(tool_name, "exec_command");
                 assert_eq!(tool_input["cmd"], "git status");
                 assert_eq!(tool_input["justification"], "Inspect the working tree");
