@@ -122,6 +122,12 @@ function isAskUserQuestion(permission: PendingPermission): boolean {
   return permission.toolName === "AskUserQuestion";
 }
 
+function stateAfterPermissionResolution(session: Session, remainingCount: number): Session["state"] {
+  if (remainingCount > 0) return "permission";
+  if (session.agentType === "codex" && session.mainStopped !== true) return "working";
+  return "idle";
+}
+
 function removeResolvedPermission(session: Session, toolName: string, agentName: string) {
   const idx = session.pendingPermissions.findIndex((p) => {
     const pendingAgent = p.agentName && p.agentName.length > 0 ? p.agentName : "main";
@@ -469,12 +475,11 @@ export const useStore = create<Store>((set) => ({
             sess.pendingPermissions = sess.pendingPermissions.filter(
               (p) => p.requestId !== ev.request_id,
             );
-            if (
-              before !== sess.pendingPermissions.length &&
-              sess.pendingPermissions.length === 0 &&
-              sess.state === "permission"
-            ) {
-              sess.state = "idle";
+            if (before !== sess.pendingPermissions.length) {
+              if (sess.state === "permission") {
+                sess.state = stateAfterPermissionResolution(sess, sess.pendingPermissions.length);
+              }
+              sess.lastSeen = Date.now();
             }
           }
           break;
@@ -585,15 +590,18 @@ export const useStore = create<Store>((set) => ({
       const sess = state.sessions[sessionId];
       if (!sess) return state;
       const remaining = sess.pendingPermissions.filter((p) => p.requestId !== requestId);
-      // If other subagent requests are still waiting, keep the session in
-      // "permission" so the card keeps the amber ring and the inline
-      // widgets stay visible. Only drop back to idle once the queue is
-      // empty.
-      const nextState: Session["state"] = remaining.length > 0 ? "permission" : "idle";
+      // Codex keeps working after the user moves to its terminal and resolves
+      // the prompt. Only Stop proves that the turn actually finished.
+      const nextState = stateAfterPermissionResolution(sess, remaining.length);
       return {
         sessions: {
           ...state.sessions,
-          [sessionId]: { ...sess, state: nextState, pendingPermissions: remaining },
+          [sessionId]: {
+            ...sess,
+            state: nextState,
+            pendingPermissions: remaining,
+            lastSeen: Date.now(),
+          },
         },
       };
     }),

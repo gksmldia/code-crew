@@ -358,7 +358,7 @@ describe("terminal-answered tool permissions", () => {
     expect(sess.state).toBe("working");
   });
 
-  it("keeps a synthesized Codex permission after its original tool event and deduplicates retries", () => {
+  it("keeps a synthesized Codex permission working after resolution until Stop", () => {
     const { applyEvent } = useStore.getState();
 
     applyEvent({
@@ -405,12 +405,46 @@ describe("terminal-answered tool permissions", () => {
       success: true,
       agent_type: "codex",
     });
+    applyEvent({
+      kind: "UserPromptSubmit",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "codex",
+    });
     applyEvent({ kind: "PermissionCancel", request_id: "codex-call-1" });
 
-    const completed = useStore.getState().sessions.s1;
-    expect(completed.currentTool).toBeUndefined();
-    expect(pendingIds(completed)).toEqual([]);
-    expect(completed.state).toBe("idle");
+    const resolved = useStore.getState().sessions.s1;
+    expect(resolved.currentTool).toBeUndefined();
+    expect(pendingIds(resolved)).toEqual([]);
+    expect(resolved.state).toBe("working");
+
+    applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj", agent_type: "codex" });
+    expect(useStore.getState().sessions.s1.state).toBe("idle");
+  });
+
+  it("keeps Codex working when the widget acknowledges the last permission", () => {
+    const { applyEvent, acknowledgePermission } = useStore.getState();
+    applyEvent({
+      kind: "SessionStart",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      agent_type: "codex",
+    });
+    applyEvent({
+      kind: "PermissionRequest",
+      session_id: "s1",
+      cwd: "/tmp/proj",
+      tool_name: "exec_command",
+      tool_input: { cmd: "git status" },
+      request_id: "codex-call-1",
+      agent_type: "codex",
+    });
+
+    acknowledgePermission("s1", "codex-call-1");
+
+    const resolved = useStore.getState().sessions.s1;
+    expect(pendingIds(resolved)).toEqual([]);
+    expect(resolved.state).toBe("working");
   });
 
   it("keeps unrelated permissions when a different tool starts", () => {
@@ -1246,7 +1280,14 @@ describe("Stop clears zombie main permissions answered in the native UI", () => 
 
     applyEvent({ kind: "Stop", session_id: "c1", cwd: "/tmp/proj", agent_type: "codex" });
 
-    expect(pendingIds(useStore.getState().sessions.c1)).toEqual(["codex-r1"]);
+    const stopped = useStore.getState().sessions.c1;
+    expect(pendingIds(stopped)).toEqual(["codex-r1"]);
+    expect(stopped.state).toBe("permission");
+
+    applyEvent({ kind: "PermissionCancel", request_id: "codex-r1" });
+    const resolved = useStore.getState().sessions.c1;
+    expect(pendingIds(resolved)).toEqual([]);
+    expect(resolved.state).toBe("idle");
   });
 });
 
