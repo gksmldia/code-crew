@@ -1020,6 +1020,15 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        // 중복 실행 차단. LaunchAgent 자동 시작과 macOS 앱 복원이 동시에
+        // 앱을 띄워도 두 번째 인스턴스는 기존 창만 꺼내고 즉시 끝난다.
+        // (플러그인 문서상 반드시 첫 번째로 등록해야 한다)
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(

@@ -51,6 +51,7 @@ tracing-subscriber = "0.3"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tauri-plugin-process = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
