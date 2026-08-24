@@ -35,6 +35,58 @@ pub fn port_file_path() -> PathBuf {
     home.join(".code-crew").join("server.port")
 }
 
+/// 창 위치·크기. 단위는 **논리 픽셀**이다 — 물리 픽셀로 저장하면 배율이 다른
+/// 모니터를 오갈 때 왕복이 깨져 창이 화면 밖으로 사라진다.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl WindowGeometry {
+    // 손상된 파일 때문에 창이 0 크기나 NaN 좌표가 되지 않게 막는다.
+    fn is_sane(&self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.width.is_finite()
+            && self.height.is_finite()
+            && self.width >= 1.0
+            && self.height >= 1.0
+    }
+}
+
+pub fn window_geometry_path() -> PathBuf {
+    let home = dirs::home_dir().expect("home dir not found");
+    home.join(".code-crew").join("window.json")
+}
+
+pub fn load_window_geometry() -> Option<WindowGeometry> {
+    load_window_geometry_at(&window_geometry_path())
+}
+
+fn load_window_geometry_at(path: &Path) -> Option<WindowGeometry> {
+    let bytes = fs::read(path).ok()?;
+    let g: WindowGeometry = serde_json::from_slice(&bytes).ok()?;
+    g.is_sane().then_some(g)
+}
+
+pub fn save_window_geometry(g: &WindowGeometry) -> std::io::Result<()> {
+    save_window_geometry_at(&window_geometry_path(), g)
+}
+
+fn save_window_geometry_at(path: &Path, g: &WindowGeometry) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        ensure_data_dir_at(parent)?;
+    }
+    let json = serde_json::to_vec_pretty(g)?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, json)?;
+    fs::rename(tmp, path)?;
+    Ok(())
+}
+
 pub fn ensure_data_dir() -> std::io::Result<PathBuf> {
     let dir = data_dir();
     ensure_data_dir_at(&dir)?;
@@ -204,6 +256,35 @@ mod tests {
         let got = load_at(&dir, "k3").unwrap();
         assert_eq!(got.messages.len(), 1);
         assert_eq!(got.display_name, "p3");
+    }
+
+    // 논리 좌표는 소수점이 나온다(화면 1/3 지점 등). f64로 그대로 왕복해야 한다.
+    #[test]
+    fn window_geometry_roundtrip() {
+        let path = tmp_dir().join("window.json");
+        let g = WindowGeometry {
+            x: -1080.0,
+            y: -326.5,
+            width: 488.0,
+            height: 300.0,
+        };
+        save_window_geometry_at(&path, &g).unwrap();
+        assert_eq!(load_window_geometry_at(&path), Some(g));
+    }
+
+    #[test]
+    fn window_geometry_rejects_broken_file() {
+        let dir = tmp_dir();
+        assert_eq!(load_window_geometry_at(&dir.join("none.json")), None);
+
+        let garbage = dir.join("garbage.json");
+        fs::write(&garbage, b"not json").unwrap();
+        assert_eq!(load_window_geometry_at(&garbage), None);
+
+        // 크기 0이면 창이 보이지 않는다. 저장값을 무시하고 기본값으로 떨어져야 한다.
+        let zero = dir.join("zero.json");
+        fs::write(&zero, br#"{"x":0,"y":0,"width":0,"height":0}"#).unwrap();
+        assert_eq!(load_window_geometry_at(&zero), None);
     }
 
     #[test]

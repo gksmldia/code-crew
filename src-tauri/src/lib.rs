@@ -8,6 +8,7 @@ pub mod transcript;
 
 use server::{AppState, PermissionDecision};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WindowEvent};
 use tokio::sync::{mpsc, Mutex};
@@ -1065,65 +1066,109 @@ fn window_is_offscreen(window: ScreenRect, monitors: &[ScreenRect]) -> bool {
     !monitors.is_empty() && !monitors.iter().any(|m| rects_overlap(window, *m))
 }
 
-// window-state 플러그인은 위치·크기를 물리 픽셀로 저장하고, 복원할 때는 창이 붙어
-// 있는 화면의 배율로 되돌린다. 배율이 다른 모니터를 오가면(외장 1x ↔ 내장 2x) 좌표와
-// 크기가 배율만큼 어긋나고, macOS가 메뉴바 위로 올라간 y만 끌어내리면서 어느 화면에도
-// 없는 좌표(x<0, y>0)에 창이 남는다 — 앱은 켜져 있는데 화면에 안 보이는 상태.
-// 복원은 setup 훅보다 나중에 실행되므로(tauri가 window_created를 메인 스레드 큐에
-// 넣는다) 보정도 복원 뒤인 이 시점에서 해야 한다.
-fn fix_window_placement<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    let Ok(scale) = window.scale_factor() else {
-        return;
-    };
-
-    // 배율이 어긋나 줄어든 창을 카드가 잘리지 않는 크기로 되돌린다.
-    if let Ok(size) = window.inner_size() {
-        let logical = size.to_logical::<f64>(scale);
-        let w = logical.width.max(MIN_W);
-        let h = logical.height.max(MIN_H);
-        if (w - logical.width).abs() > 0.5 || (h - logical.height).abs() > 0.5 {
-            let _ = window.set_size(LogicalSize::new(w, h));
-        }
+/// 창에 적용할 논리 좌표를 정한다. 저장값이 있으면 그것을, 없으면 현재값을 쓰고
+/// 최소 크기와 화면 밖 여부를 보정한다. macOS는 창 조작이 곧바로 반영되지 않아
+/// 쓰고 다시 읽으면 이전 값이 나오므로, 한 번의 측정으로 목표값을 다 정한다.
+fn target_geometry(
+    saved: Option<ScreenRect>,
+    current: ScreenRect,
+    monitors: &[ScreenRect],
+    primary: Option<ScreenRect>,
+) -> ScreenRect {
+    let (x, y, w, h) = saved.unwrap_or(current);
+    let w = w.max(MIN_W);
+    let h = h.max(MIN_H);
+    if !window_is_offscreen((x, y, w, h), monitors) {
+        return (x, y, w, h);
     }
+    // 주 모니터 안쪽으로 끌어온다. 위젯이므로 화면 위쪽 1/3 지점에 둔다.
+    match primary {
+        Some((mx, my, mw, mh)) => (
+            mx + ((mw - w) / 2.0).max(0.0),
+            my + ((mh - h) / 3.0).max(0.0),
+            w,
+            h,
+        ),
+        None => (x, y, w, h),
+    }
+}
 
-    // 모니터마다 배율이 달라 물리 좌표로는 비교가 어긋난다. 논리 좌표로 모아서 본다.
-    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+// 위치·크기는 tauri-plugin-window-state 대신 직접 저장한다. 그 플러그인은 물리
+// 픽셀로 저장하고 복원할 때는 창이 붙어 있는 화면의 배율로 되돌리기 때문에, 배율이
+// 다른 모니터를 오가면(외장 1x ↔ 내장 2x) 좌표와 크기가 배율만큼 어긋난다. 실제로
+// macOS가 메뉴바 위로 올라간 y만 끌어내려서 어느 화면에도 없는 좌표(x<0, y>0)에
+// 창이 남았다 — 앱은 켜져 있는데 화면에 안 보이는 상태. 논리 픽셀은 배율과 무관해
+// 왕복이 깨지지 않는다.
+static GEOMETRY_RESTORED: AtomicBool = AtomicBool::new(false);
+
+fn monitor_rect(m: &tauri::Monitor) -> ScreenRect {
+    let s = m.scale_factor();
+    let p = m.position().to_logical::<f64>(s);
+    let sz = m.size().to_logical::<f64>(s);
+    (p.x, p.y, sz.width, sz.height)
+}
+
+/// 현재 창의 논리 좌표. 위치는 outer, 크기는 inner — set_position·set_size와 짝이 맞는 값.
+fn current_geometry<R: tauri::Runtime>(window: &tauri::Window<R>) -> Option<ScreenRect> {
+    let scale = window.scale_factor().ok()?;
+    let pos = window.outer_position().ok()?.to_logical::<f64>(scale);
+    let size = window.inner_size().ok()?.to_logical::<f64>(scale);
+    Some((pos.x, pos.y, size.width, size.height))
+}
+
+/// 저장된 위치·크기를 창에 적용한다. on_page_load는 새로고침마다 불리므로 한 번만 한다.
+fn restore_window_geometry<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    if GEOMETRY_RESTORED.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(current) = current_geometry(window) else {
         return;
     };
-    let pos = pos.to_logical::<f64>(scale);
-    let size = size.to_logical::<f64>(scale);
+    let saved = storage::load_window_geometry().map(|g| (g.x, g.y, g.width, g.height));
     let monitors: Vec<ScreenRect> = window
         .available_monitors()
         .unwrap_or_default()
         .iter()
-        .map(|m| {
-            let s = m.scale_factor();
-            let p = m.position().to_logical::<f64>(s);
-            let sz = m.size().to_logical::<f64>(s);
-            (p.x, p.y, sz.width, sz.height)
-        })
+        .map(monitor_rect)
         .collect();
+    let primary = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| monitor_rect(&m));
 
-    if !window_is_offscreen((pos.x, pos.y, size.width, size.height), &monitors) {
-        return;
-    }
-
-    // 주 모니터 안쪽으로 끌어온다. 위젯이므로 화면 위쪽 1/3 지점에 둔다.
-    if let Ok(Some(m)) = window.primary_monitor() {
-        let s = m.scale_factor();
-        let p = m.position().to_logical::<f64>(s);
-        let sz = m.size().to_logical::<f64>(s);
-        let x = p.x + ((sz.width - size.width) / 2.0).max(0.0);
-        let y = p.y + ((sz.height - size.height) / 3.0).max(0.0);
-        let _ = window.set_position(LogicalPosition::new(x, y));
-        tracing::warn!(
-            "window restored offscreen at ({}, {}); moved to ({}, {})",
-            pos.x,
-            pos.y,
+    let (x, y, w, h) = target_geometry(saved, current, &monitors, primary);
+    let _ = window.set_size(LogicalSize::new(w, h));
+    let _ = window.set_position(LogicalPosition::new(x, y));
+    match saved {
+        Some(s) if (s.0, s.1) != (x, y) => tracing::warn!(
+            "saved window position ({}, {}) is offscreen; moved to ({}, {})",
+            s.0,
+            s.1,
             x,
             y
-        );
+        ),
+        _ => tracing::info!("window geometry applied: ({}, {}) {}x{}", x, y, w, h),
     }
+    GEOMETRY_RESTORED.store(true, Ordering::SeqCst);
+}
+
+/// 창을 옮기거나 크기를 바꿀 때마다 논리 좌표로 기록한다. 파일이 100바이트도
+/// 안 되니 드래그 중 매 프레임 써도 부담이 없고, 강제 종료·재부팅에도 위치가 남는다.
+fn record_window_geometry<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    // 복원 전 좌표는 tauri.conf.json 기본값이다. 저장하면 사용자 위치를 덮는다.
+    if !GEOMETRY_RESTORED.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some((x, y, width, height)) = current_geometry(window) else {
+        return;
+    };
+    let _ = storage::save_window_geometry(&storage::WindowGeometry {
+        x,
+        y,
+        width,
+        height,
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1152,28 +1197,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::SIZE,
-                )
-                .build(),
-        )
-        // 복원된 위치·크기를 검사한다. window-state는 창 생성 훅에서 복원을 호출하지만
-        // macOS에서는 그 직후에도 아직 반영되지 않는다 — 실측(2026-08-24)으로
-        // on_window_ready·on_webview_ready·RunEvent::Ready 시점 모두 conf 기본값이었고,
-        // 프론트 로드 시점(+132ms)에 비로소 복원값이 읽혔다. 그래서 여기서 본다.
-        .plugin(
-            tauri::plugin::Builder::<tauri::Wry>::new("window-placement")
-                .on_page_load(|webview, _| {
-                    let window = webview.window();
-                    if window.label() == "main" {
-                        fix_window_placement(&window);
-                    }
-                })
-                .build(),
-        )
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1201,11 +1224,27 @@ pub fn run() {
         // clean exit as "user wanted to quit" and never relaunches.
         // True quit still happens via the tray menu (`app.exit(0)` below).
         .on_window_event(|window, event| {
-            if window.label() == "main" {
-                if let WindowEvent::CloseRequested { api, .. } = event {
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
+                // 옮기거나 크기를 바꿀 때마다 저장한다. 종료 시점에만 쓰면
+                // 재부팅이나 강제 종료로 위치가 날아간다.
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) => record_window_geometry(window),
+                _ => {}
+            }
+        })
+        // 위치·크기 복원 시점. setup·on_window_ready·RunEvent::Ready 시점에는 창 조작이
+        // 아직 반영되지 않아 다시 읽으면 conf 기본값이 나온다 — 실측(2026-08-24)으로
+        // 프론트 로드 시점(+132ms)에 비로소 반영된 값이 읽혔다. 그래서 여기서 한다.
+        .on_page_load(|webview, _| {
+            let window = webview.window();
+            if window.label() == "main" {
+                restore_window_geometry(&window);
             }
         })
         .setup(move |app| {
@@ -1222,9 +1261,9 @@ pub fn run() {
             }
             tracing::info!("hook auto-install report:\n{}", report);
 
-            // set_min_size는 이후 사용자 리사이즈만 막는다. 복원값 보정은
-            // window-placement 플러그인 훅에서 한다 — 이 setup은 window-state 복원보다
-            // 먼저 돌아서, 여기서 크기를 고쳐도 곧 복원값에 덮인다.
+            // set_min_size는 이후 사용자 리사이즈만 막는다. 저장값 복원과 최소 크기
+            // 보정은 on_page_load의 restore_window_geometry가 한다 — 이 setup 시점의
+            // 크기 조작은 아직 반영되지 않아 곧 덮인다.
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_min_size(Some(LogicalSize::new(MIN_W, MIN_H)));
             }
@@ -1358,16 +1397,21 @@ mod tests {
         assert!(super::cwd_folder_candidates("/").is_empty());
     }
 
-    // 2026-08-24 실측: 외장(1x) 모니터에 있던 창이 재부팅 뒤 내장(2x) 배율로 복원돼
-    // (-255, 33) 128x77로 떨어졌다. 모니터 배치가 내장 위쪽이라 x<0 && y>0은 세 화면
-    // 어디에도 속하지 않는 사각지대다 — 앱은 켜져 있는데 화면에 안 보였던 좌표.
-    #[test]
-    fn detects_window_dropped_into_display_blind_spot() {
-        let monitors = [
+    // 2026-08-24 실측한 모니터 배치. 외장 2대가 내장 위쪽에 붙어 있어서
+    // x<0 && y>0은 세 화면 어디에도 속하지 않는 사각지대가 된다.
+    fn three_monitors() -> [super::ScreenRect; 3] {
+        [
             (0.0, 0.0, 1728.0, 1117.0),
             (-1080.0, -1080.0, 1920.0, 1080.0),
             (840.0, -1152.0, 2048.0, 1152.0),
-        ];
+        ]
+    }
+
+    // 외장(1x)에 있던 창이 재부팅 뒤 내장(2x) 배율로 복원돼 (-255, 33) 128x77로
+    // 떨어졌다 — 앱은 켜져 있는데 화면에 안 보였던 좌표.
+    #[test]
+    fn detects_window_dropped_into_display_blind_spot() {
+        let monitors = three_monitors();
         assert!(super::window_is_offscreen(
             (-255.0, 33.0, 128.0, 77.0),
             &monitors
@@ -1384,6 +1428,80 @@ mod tests {
         ));
         // 모니터 정보를 못 얻으면 판정하지 않는다.
         assert!(!super::window_is_offscreen((-255.0, 33.0, 128.0, 77.0), &[]));
+    }
+
+    // conf 기본값. 저장값이 있으면 이 값은 쓰이지 않아야 한다.
+    const CONF_DEFAULT: super::ScreenRect = (0.0, 600.0, 500.0, 320.0);
+
+    #[test]
+    fn restores_saved_geometry_as_is() {
+        let m = three_monitors();
+        assert_eq!(
+            super::target_geometry(
+                Some((302.0, -326.0, 488.0, 300.0)),
+                CONF_DEFAULT,
+                &m,
+                Some(m[0])
+            ),
+            (302.0, -326.0, 488.0, 300.0),
+        );
+    }
+
+    // 첫 실행처럼 저장값이 없으면 현재 창 상태를 그대로 둔다.
+    #[test]
+    fn keeps_current_geometry_without_saved_value() {
+        let m = three_monitors();
+        assert_eq!(
+            super::target_geometry(None, CONF_DEFAULT, &m, Some(m[0])),
+            CONF_DEFAULT,
+        );
+    }
+
+    // 배율이 어긋나 반토막 난 크기로 저장돼 있어도 카드가 잘리지 않는 크기로 키운다.
+    #[test]
+    fn grows_geometry_below_minimum_size() {
+        let m = three_monitors();
+        assert_eq!(
+            super::target_geometry(
+                Some((300.0, 100.0, 244.0, 150.0)),
+                CONF_DEFAULT,
+                &m,
+                Some(m[0])
+            ),
+            (300.0, 100.0, 244.0, 264.0),
+        );
+    }
+
+    // 모니터를 뽑아서 저장값이 화면 밖이 된 경우 주 모니터 안으로 끌어온다.
+    #[test]
+    fn pulls_offscreen_geometry_into_primary_monitor() {
+        let m = three_monitors();
+        let placed = super::target_geometry(
+            Some((-255.0, 33.0, 128.0, 77.0)),
+            CONF_DEFAULT,
+            &m,
+            Some(m[0]),
+        );
+        assert_eq!((placed.2, placed.3), (super::MIN_W, super::MIN_H));
+        assert_eq!(placed.0, 744.0, "주 모니터 가로 중앙");
+        assert!(
+            !super::window_is_offscreen(placed, &m),
+            "옮긴 자리는 화면 안이어야 한다: {placed:?}"
+        );
+    }
+
+    // 주 모니터를 못 얻으면 옮길 기준이 없다. 크기만 보정하고 좌표는 둔다.
+    #[test]
+    fn leaves_offscreen_geometry_without_primary_monitor() {
+        assert_eq!(
+            super::target_geometry(
+                Some((-255.0, 33.0, 300.0, 300.0)),
+                CONF_DEFAULT,
+                &three_monitors(),
+                None
+            ),
+            (-255.0, 33.0, 300.0, 300.0),
+        );
     }
 
     // Codex 카드는 GUI가 아닌 PID 하나만 들고 있다. 조상까지 넓혀야 창을
