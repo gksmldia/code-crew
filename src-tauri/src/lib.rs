@@ -9,7 +9,7 @@ pub mod transcript;
 use server::{AppState, PermissionDecision};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{Emitter, LogicalSize, Manager, WindowEvent};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WindowEvent};
 use tokio::sync::{mpsc, Mutex};
 
 #[cfg(target_os = "windows")]
@@ -1047,6 +1047,85 @@ fn process_alive(_pid: u32) -> bool {
     true
 }
 
+// 높이 264px = 카드 min-h 200 + 헤더 40 + 스크롤러 p-3 24. 이보다 작으면 카드가
+// overflow-y-hidden 스크롤러를 넘어가 펫이 잘린다.
+const MIN_W: f64 = 240.0;
+const MIN_H: f64 = 264.0;
+
+/// 논리 픽셀 사각형 (x, y, 너비, 높이).
+type ScreenRect = (f64, f64, f64, f64);
+
+fn rects_overlap(a: ScreenRect, b: ScreenRect) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+/// 창이 어느 모니터에도 걸치지 않으면 true. 모니터 정보를 못 얻으면
+/// 판정할 수 없으므로 false(그대로 둔다).
+fn window_is_offscreen(window: ScreenRect, monitors: &[ScreenRect]) -> bool {
+    !monitors.is_empty() && !monitors.iter().any(|m| rects_overlap(window, *m))
+}
+
+// window-state 플러그인은 위치·크기를 물리 픽셀로 저장하고, 복원할 때는 창이 붙어
+// 있는 화면의 배율로 되돌린다. 배율이 다른 모니터를 오가면(외장 1x ↔ 내장 2x) 좌표와
+// 크기가 배율만큼 어긋나고, macOS가 메뉴바 위로 올라간 y만 끌어내리면서 어느 화면에도
+// 없는 좌표(x<0, y>0)에 창이 남는다 — 앱은 켜져 있는데 화면에 안 보이는 상태.
+// 복원은 setup 훅보다 나중에 실행되므로(tauri가 window_created를 메인 스레드 큐에
+// 넣는다) 보정도 복원 뒤인 이 시점에서 해야 한다.
+fn fix_window_placement<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+
+    // 배율이 어긋나 줄어든 창을 카드가 잘리지 않는 크기로 되돌린다.
+    if let Ok(size) = window.inner_size() {
+        let logical = size.to_logical::<f64>(scale);
+        let w = logical.width.max(MIN_W);
+        let h = logical.height.max(MIN_H);
+        if (w - logical.width).abs() > 0.5 || (h - logical.height).abs() > 0.5 {
+            let _ = window.set_size(LogicalSize::new(w, h));
+        }
+    }
+
+    // 모니터마다 배율이 달라 물리 좌표로는 비교가 어긋난다. 논리 좌표로 모아서 본다.
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let pos = pos.to_logical::<f64>(scale);
+    let size = size.to_logical::<f64>(scale);
+    let monitors: Vec<ScreenRect> = window
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let s = m.scale_factor();
+            let p = m.position().to_logical::<f64>(s);
+            let sz = m.size().to_logical::<f64>(s);
+            (p.x, p.y, sz.width, sz.height)
+        })
+        .collect();
+
+    if !window_is_offscreen((pos.x, pos.y, size.width, size.height), &monitors) {
+        return;
+    }
+
+    // 주 모니터 안쪽으로 끌어온다. 위젯이므로 화면 위쪽 1/3 지점에 둔다.
+    if let Ok(Some(m)) = window.primary_monitor() {
+        let s = m.scale_factor();
+        let p = m.position().to_logical::<f64>(s);
+        let sz = m.size().to_logical::<f64>(s);
+        let x = p.x + ((sz.width - size.width) / 2.0).max(0.0);
+        let y = p.y + ((sz.height - size.height) / 3.0).max(0.0);
+        let _ = window.set_position(LogicalPosition::new(x, y));
+        tracing::warn!(
+            "window restored offscreen at ({}, {}); moved to ({}, {})",
+            pos.x,
+            pos.y,
+            x,
+            y
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -1079,6 +1158,20 @@ pub fn run() {
                     tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::SIZE,
                 )
+                .build(),
+        )
+        // 복원된 위치·크기를 검사한다. window-state는 창 생성 훅에서 복원을 호출하지만
+        // macOS에서는 그 직후에도 아직 반영되지 않는다 — 실측(2026-08-24)으로
+        // on_window_ready·on_webview_ready·RunEvent::Ready 시점 모두 conf 기본값이었고,
+        // 프론트 로드 시점(+132ms)에 비로소 복원값이 읽혔다. 그래서 여기서 본다.
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("window-placement")
+                .on_page_load(|webview, _| {
+                    let window = webview.window();
+                    if window.label() == "main" {
+                        fix_window_placement(&window);
+                    }
+                })
                 .build(),
         )
         .plugin(tauri_plugin_fs::init())
@@ -1129,22 +1222,11 @@ pub fn run() {
             }
             tracing::info!("hook auto-install report:\n{}", report);
 
-            // Window must be ≥264px tall (card min-h 200 + header 40 + scroller p-3 24)
-            // or the card overflows the overflow-y-hidden scroller and the pet clips.
-            // set_min_size guards future user resizing; the size bump fixes a state restored
-            // smaller by the window-state plugin.
-            const MIN_W: f64 = 240.0;
-            const MIN_H: f64 = 264.0;
+            // set_min_size는 이후 사용자 리사이즈만 막는다. 복원값 보정은
+            // window-placement 플러그인 훅에서 한다 — 이 setup은 window-state 복원보다
+            // 먼저 돌아서, 여기서 크기를 고쳐도 곧 복원값에 덮인다.
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_min_size(Some(LogicalSize::new(MIN_W, MIN_H)));
-                if let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) {
-                    let logical = size.to_logical::<f64>(scale);
-                    let new_w = logical.width.max(MIN_W);
-                    let new_h = logical.height.max(MIN_H);
-                    if (new_w - logical.width).abs() > 0.5 || (new_h - logical.height).abs() > 0.5 {
-                        let _ = win.set_size(LogicalSize::new(new_w, new_h));
-                    }
-                }
             }
 
             use tauri::menu::{CheckMenuItem, Menu, MenuItem};
@@ -1274,6 +1356,34 @@ mod tests {
         );
         assert!(super::cwd_folder_candidates("").is_empty());
         assert!(super::cwd_folder_candidates("/").is_empty());
+    }
+
+    // 2026-08-24 실측: 외장(1x) 모니터에 있던 창이 재부팅 뒤 내장(2x) 배율로 복원돼
+    // (-255, 33) 128x77로 떨어졌다. 모니터 배치가 내장 위쪽이라 x<0 && y>0은 세 화면
+    // 어디에도 속하지 않는 사각지대다 — 앱은 켜져 있는데 화면에 안 보였던 좌표.
+    #[test]
+    fn detects_window_dropped_into_display_blind_spot() {
+        let monitors = [
+            (0.0, 0.0, 1728.0, 1117.0),
+            (-1080.0, -1080.0, 1920.0, 1080.0),
+            (840.0, -1152.0, 2048.0, 1152.0),
+        ];
+        assert!(super::window_is_offscreen(
+            (-255.0, 33.0, 128.0, 77.0),
+            &monitors
+        ));
+        // 사용자가 옮겨 놓은 정상 위치는 위쪽 모니터 안이다.
+        assert!(!super::window_is_offscreen(
+            (302.0, -326.0, 488.0, 300.0),
+            &monitors
+        ));
+        // 모서리만 걸쳐도 보이므로 옮기지 않는다.
+        assert!(!super::window_is_offscreen(
+            (-100.0, -50.0, 128.0, 77.0),
+            &monitors
+        ));
+        // 모니터 정보를 못 얻으면 판정하지 않는다.
+        assert!(!super::window_is_offscreen((-255.0, 33.0, 128.0, 77.0), &[]));
     }
 
     // Codex 카드는 GUI가 아닌 PID 하나만 들고 있다. 조상까지 넓혀야 창을
