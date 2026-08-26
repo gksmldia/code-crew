@@ -1,5 +1,5 @@
 use crate::events::Event;
-use chrono::{Datelike, Utc};
+use chrono::{DateTime, Datelike, Local};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -9,14 +9,15 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub fn codex_session_dir() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    let now = Utc::now();
-    Some(
-        home.join(".codex")
-            .join("sessions")
-            .join(format!("{:04}", now.year()))
-            .join(format!("{:02}", now.month()))
-            .join(format!("{:02}", now.day())),
-    )
+    Some(codex_session_dir_at(home, Local::now()))
+}
+
+fn codex_session_dir_at(home: PathBuf, now: DateTime<Local>) -> PathBuf {
+    home.join(".codex")
+        .join("sessions")
+        .join(format!("{:04}", now.year()))
+        .join(format!("{:02}", now.month()))
+        .join(format!("{:02}", now.day()))
 }
 
 pub async fn run(tx: UnboundedSender<Event>) {
@@ -878,6 +879,18 @@ fn map_codex_line(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn uses_local_date_for_codex_session_directory() {
+        let now = DateTime::parse_from_rfc3339("2026-08-27T00:30:00+09:00")
+            .unwrap()
+            .with_timezone(&Local);
+
+        assert_eq!(
+            codex_session_dir_at(PathBuf::from("/tmp/home"), now),
+            PathBuf::from("/tmp/home/.codex/sessions/2026/08/27")
+        );
+    }
 
     #[test]
     fn maps_function_call() {
