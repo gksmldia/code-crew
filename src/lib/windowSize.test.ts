@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { cardRowWindowWidth } from "./windowSize";
+import { rowContentWidth } from "./windowSize";
 
-describe("cardRowWindowWidth", () => {
-  it("fits two cards with one gap and horizontal padding", () => {
-    expect(cardRowWindowWidth([200, 200], 12, 12, 12)).toBe(436);
+describe("rowContentWidth", () => {
+  it("sums widths, gaps and horizontal padding", () => {
+    expect(rowContentWidth([200, 200], 12, 12, 12)).toBe(436);
   });
 
-  it("keeps the minimum window width for zero or one card", () => {
-    expect(cardRowWindowWidth([], 12, 12, 12)).toBe(240);
-    expect(cardRowWindowWidth([200], 12, 12, 12)).toBe(240);
+  it("has no gap for zero or one element", () => {
+    expect(rowContentWidth([], 12, 12, 12)).toBe(24);
+    expect(rowContentWidth([200], 12, 12, 12)).toBe(224);
+  });
+
+  it("rounds subpixel widths up so content never overflows", () => {
+    expect(rowContentWidth([200.4], 0, 0, 0)).toBe(201);
   });
 });

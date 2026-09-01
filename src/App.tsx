@@ -7,7 +7,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { useStore } from "./store";
 import { PetCard } from "./components/PetCard";
 import { useIdleSweep } from "./hooks/useIdleSweep";
-import { cardRowWindowWidth } from "./lib/windowSize";
+import { rowContentWidth } from "./lib/windowSize";
 import type { Event, Message } from "./types";
 import "./App.css";
 
@@ -60,6 +60,7 @@ function App() {
   const restoredRef = useRef<Set<string>>(new Set());
   const pendingUpdateRef = useRef<PendingUpdate | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const [updateState, setUpdateState] = useState<UpdateState>({ kind: "idle" });
   const checkForUpdates = async (manual = false) => {
     if (updateState.kind === "checking" || updateState.kind === "installing") return;
@@ -186,18 +187,38 @@ function App() {
     void getCurrentWindow().startDragging();
   };
 
+  // 한 줄 flex 컨테이너가 넘치지 않는 최소 폭을 실측한다.
+  const measureRowWidth = (container: HTMLElement, widths: number[]) => {
+    const style = window.getComputedStyle(container);
+    return rowContentWidth(
+      widths,
+      Number.parseFloat(style.columnGap) || 0,
+      Number.parseFloat(style.paddingLeft) || 0,
+      Number.parseFloat(style.paddingRight) || 0,
+    );
+  };
+
   const fitWindowWidthToCards = async () => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
 
     const cards = Array.from(scroller.querySelectorAll<HTMLElement>("[data-card]"));
-    const style = window.getComputedStyle(scroller);
-    const width = cardRowWindowWidth(
+    // 헤더는 여백(flex-1)이 늘어나므로 여백을 0으로 보고 실제 콘텐츠 폭만 더한다.
+    const header = headerRef.current;
+    const headerWidth = header
+      ? measureRowWidth(
+          header,
+          Array.from(header.children).map((child) =>
+            child.hasAttribute("data-spacer") ? 0 : child.getBoundingClientRect().width,
+          ),
+        )
+      : 0;
+    const cardsWidth = measureRowWidth(
+      scroller,
       cards.map((card) => card.getBoundingClientRect().width),
-      Number.parseFloat(style.columnGap) || 0,
-      Number.parseFloat(style.paddingLeft) || 0,
-      Number.parseFloat(style.paddingRight) || 0,
     );
+    // 카드가 하나뿐이어도 헤더가 잘리는 폭까지는 줄이지 않는다.
+    const width = Math.max(headerWidth, cardsWidth);
 
     try {
       const appWindow = getCurrentWindow();
@@ -226,13 +247,14 @@ function App() {
   return (
     <div className="h-full flex flex-col bg-white/65 dark:bg-gray-900/65 backdrop-blur relative">
       <header
+        ref={headerRef}
         className="h-10 px-3 flex items-center gap-2 text-xs border-b border-black/10 dark:border-white/10 select-none"
         onMouseDown={handleHeaderMouseDown}
       >
         <span>🐾</span>
         <span className="font-semibold">code-crew</span>
         <span className="opacity-60">{list.length} sessions</span>
-        <span className="flex-1" />
+        <span data-spacer className="flex-1" />
         {updateState.kind === "available" ? (
           <button
             onClick={installUpdate}
