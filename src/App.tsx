@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { PhysicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check } from "@tauri-apps/plugin-updater";
 import { useStore } from "./store";
 import { PetCard } from "./components/PetCard";
 import { useIdleSweep } from "./hooks/useIdleSweep";
+import { cardRowWindowWidth } from "./lib/windowSize";
 import type { Event, Message } from "./types";
 import "./App.css";
 
@@ -184,11 +186,48 @@ function App() {
     void getCurrentWindow().startDragging();
   };
 
+  const fitWindowWidthToCards = async () => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+
+    const cards = Array.from(scroller.querySelectorAll<HTMLElement>("[data-card]"));
+    const style = window.getComputedStyle(scroller);
+    const width = cardRowWindowWidth(
+      cards.map((card) => card.getBoundingClientRect().width),
+      Number.parseFloat(style.columnGap) || 0,
+      Number.parseFloat(style.paddingLeft) || 0,
+      Number.parseFloat(style.paddingRight) || 0,
+    );
+
+    try {
+      const appWindow = getCurrentWindow();
+      const [currentSize, scaleFactor] = await Promise.all([
+        appWindow.innerSize(),
+        appWindow.scaleFactor(),
+      ]);
+      await appWindow.setSize(
+        new PhysicalSize(Math.round(width * scaleFactor), currentSize.height),
+      );
+    } catch (error) {
+      console.error("Window width fit failed", error);
+    }
+  };
+
+  const handleHeaderMouseDown = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("button")) return;
+    if (e.detail === 2) {
+      void fitWindowWidthToCards();
+      return;
+    }
+    startDrag(e);
+  };
+
   return (
     <div className="h-full flex flex-col bg-white/65 dark:bg-gray-900/65 backdrop-blur relative">
       <header
         className="h-10 px-3 flex items-center gap-2 text-xs border-b border-black/10 dark:border-white/10 select-none"
-        onMouseDown={startDrag}
+        onMouseDown={handleHeaderMouseDown}
       >
         <span>🐾</span>
         <span className="font-semibold">code-crew</span>
