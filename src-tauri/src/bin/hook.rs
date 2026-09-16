@@ -251,6 +251,41 @@ fn enrich_with_pid_info(buf: &str) -> String {
     buf.to_string()
 }
 
+/// Pull `hook_event_name` out of the raw stdin payload without deserializing
+/// the whole thing. Every Claude Code hook payload carries it.
+fn payload_hook_event_name(payload: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()?
+        .get("hook_event_name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Decide which run mode to use.
+///
+/// The subcommand used to come from `argv[1]` (`"permission"` / `"event"`), set
+/// by the `args` array in the installed hook entry. But Claude Code drops that
+/// `args` array whenever it re-serializes `settings.json` (observed on Windows
+/// after the user grants an "always allow", which rewrites the file). With no
+/// argv the process fell back to `"event"` mode even for PermissionRequest, so
+/// the hook only mirrored the request to `/event` and never opened the blocking
+/// `/permission` request the widget's Allow/Deny resolves — the click did
+/// nothing and Claude Code got no decision.
+///
+/// The stdin payload always carries `hook_event_name`, so we let it decide: a
+/// permission request runs in `"permission"` mode no matter what argv says.
+/// argv still wins for everything else (keeps the legacy `pretool` path usable).
+fn resolve_mode(argv_mode: &str, payload: &str) -> &'static str {
+    match payload_hook_event_name(payload).as_deref() {
+        Some("PermissionRequest") | Some("Permission") => "permission",
+        _ => match argv_mode {
+            "permission" => "permission",
+            "pretool" => "pretool",
+            _ => "event",
+        },
+    }
+}
+
 /// Wrapped JSON the hook returns when nothing answered in time. Matches the
 /// shape produced by `server.rs::wrap_decision`, so Claude Code sees identical
 /// output whether the widget answered or the hook fell back here.
@@ -446,6 +481,12 @@ fn main() -> ExitCode {
     // is Claude Code's node process; walking up from there reaches the GUI.
     let buf = enrich_with_pid_info(&buf);
 
+    // Prefer the payload's hook_event_name over argv — Claude Code strips the
+    // `args` array from command hooks on re-serialize, which otherwise leaves
+    // PermissionRequest running in "event" mode (widget Allow/Deny never
+    // reaches Claude Code). See `resolve_mode`.
+    let mode = resolve_mode(mode, &buf);
+
     if std::env::var("CODE_CREW_DEBUG").is_ok() || std::path::Path::new("/tmp/code-crew-debug").exists() {
         use std::io::Write as _;
         if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -602,5 +643,63 @@ fn main() -> ExitCode {
                 .send();
             ExitCode::SUCCESS
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{payload_hook_event_name, resolve_mode};
+
+    fn payload(event: &str) -> String {
+        serde_json::json!({
+            "hook_event_name": event,
+            "session_id": "s1",
+            "tool_name": "Bash",
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn payload_hook_event_name_reads_field() {
+        assert_eq!(
+            payload_hook_event_name(&payload("PermissionRequest")).as_deref(),
+            Some("PermissionRequest")
+        );
+        assert_eq!(payload_hook_event_name("not json"), None);
+        assert_eq!(payload_hook_event_name("{}"), None);
+    }
+
+    // The core regression: Claude Code strips the `args` array on re-serialize,
+    // so the hook is launched with no argv and defaults to "event". A
+    // PermissionRequest payload must still route to "permission" mode.
+    #[test]
+    fn permission_payload_overrides_missing_argv() {
+        assert_eq!(resolve_mode("event", &payload("PermissionRequest")), "permission");
+        assert_eq!(resolve_mode("event", &payload("Permission")), "permission");
+    }
+
+    #[test]
+    fn permission_payload_wins_even_with_event_argv() {
+        assert_eq!(resolve_mode("event", &payload("PermissionRequest")), "permission");
+    }
+
+    #[test]
+    fn non_permission_payloads_stay_in_argv_mode() {
+        assert_eq!(resolve_mode("event", &payload("SessionStart")), "event");
+        assert_eq!(resolve_mode("event", &payload("PreToolUse")), "event");
+        assert_eq!(resolve_mode("event", &payload("Stop")), "event");
+    }
+
+    #[test]
+    fn argv_still_selects_mode_when_payload_is_not_a_permission() {
+        // pretool/permission passed explicitly (args preserved) keep working.
+        assert_eq!(resolve_mode("pretool", &payload("PreToolUse")), "pretool");
+        assert_eq!(resolve_mode("permission", &payload("PreToolUse")), "permission");
+    }
+
+    #[test]
+    fn unparseable_payload_falls_back_to_argv() {
+        assert_eq!(resolve_mode("event", "garbage"), "event");
+        assert_eq!(resolve_mode("permission", "garbage"), "permission");
     }
 }
