@@ -10,6 +10,8 @@ import { SpeechBubble } from "./SpeechBubble";
 import { ChatMessage } from "./ChatMessage";
 import { PermissionInline } from "./PermissionInline";
 import { BreedPicker } from "./BreedPicker";
+import { SessionMenu } from "./SessionMenu";
+import { formatSessionInfo } from "../lib/sessionInfo";
 
 const DRAG_MIME = "application/x-code-crew-session-id";
 
@@ -76,6 +78,11 @@ export function PetCard({ session }: PetCardProps) {
   const [editingName, setEditingName] = useState(false);
   // Esc 직후 언마운트 blur가 저장으로 뒤집지 않게 막는다.
   const cancelNameRef = useRef(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  // 메뉴를 열 때 미리 받아 둔다 — 클릭 뒤 await를 끼우면 WebKit이 클립보드 쓰기를 막을 수 있다.
+  const [sessionTitle, setSessionTitle] = useState<string | null>(null);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerAnchor, setPickerAnchor] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [dragging, setDragging] = useState(false);
@@ -151,6 +158,39 @@ export function PetCard({ session }: PetCardProps) {
   };
 
   const shownName = session.customName || session.displayName || "(?)";
+  const startRename = () => { cancelNameRef.current = false; setEditingName(true); };
+
+  const onHeaderContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenuAnchor({ top: e.clientY, left: e.clientX });
+    setMenuOpen(true);
+    setSessionTitle(null);
+    // Codex는 /status에 세션 명이 없어 ID만 복사한다.
+    if (session.agentType !== "claude") return;
+    void invoke<string | null>("session_title", {
+      sessionId: session.sessionId,
+      transcriptPath: session.mainTranscriptPath ?? null,
+    })
+      .then(setSessionTitle)
+      .catch(() => setSessionTitle(null));
+  };
+
+  const copySessionInfo = () => {
+    const text = formatSessionInfo(session.sessionId, sessionTitle);
+    navigator.clipboard.writeText(text).then(
+      () => setCopyNotice("✓ 복사됨"),
+      (error) => {
+        console.error("Session info copy failed", error);
+        setCopyNotice("✗ 복사 실패");
+      },
+    );
+  };
+  useEffect(() => {
+    if (!copyNotice) return;
+    const id = setTimeout(() => setCopyNotice(null), 1500);
+    return () => clearTimeout(id);
+  }, [copyNotice]);
   const commitName = (value: string) => {
     if (cancelNameRef.current) return;
     setCustomName(session.sessionId, value);
@@ -177,7 +217,9 @@ export function PetCard({ session }: PetCardProps) {
         dropTarget && "ring-2 ring-blue-500/60",
       )}
     >
-      <div className="flex items-center justify-between text-xs opacity-80 border-b border-dashed border-black/10 dark:border-white/10 pb-1.5 mb-1">
+      <div
+        onContextMenu={onHeaderContextMenu}
+        className="flex items-center justify-between text-xs opacity-80 border-b border-dashed border-black/10 dark:border-white/10 pb-1.5 mb-1">
         <div className="flex items-center gap-1.5 min-w-0">
           {editingName ? (
             <input
@@ -197,7 +239,7 @@ export function PetCard({ session }: PetCardProps) {
           ) : (
             // 카드 더블클릭은 터미널 포커스라서, 이름 더블클릭은 여기서 막고 편집으로 전환한다.
             <span
-              onDoubleClick={(e) => { e.stopPropagation(); cancelNameRef.current = false; setEditingName(true); }}
+              onDoubleClick={(e) => { e.stopPropagation(); startRename(); }}
               title="더블클릭해서 이름 변경 (비우면 자동 이름)"
               className="font-mono font-semibold truncate cursor-text"
             >
@@ -205,6 +247,7 @@ export function PetCard({ session }: PetCardProps) {
             </span>
           )}
           {agentBadge(session.agentType)}
+          {copyNotice && <span className="text-[10px] text-emerald-700 whitespace-nowrap">{copyNotice}</span>}
         </div>
         <span className="flex items-center gap-1">
           {isTeam && <span className="text-[10px]">🤹 {session.subagents.length}</span>}
@@ -284,6 +327,14 @@ export function PetCard({ session }: PetCardProps) {
         }}
         onClose={() => setPickerOpen(false)}
         anchor={pickerAnchor}
+      />
+      <SessionMenu
+        open={menuOpen}
+        anchor={menuAnchor}
+        hasTitle={session.agentType === "claude"}
+        onRename={startRename}
+        onCopy={copySessionInfo}
+        onClose={() => setMenuOpen(false)}
       />
     </div>
   );

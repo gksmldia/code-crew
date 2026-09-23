@@ -976,6 +976,16 @@ fn transcript_status(path: String) -> transcript::TranscriptStatus {
     transcript::status(std::path::Path::new(&path))
 }
 
+/// 카드 메뉴 "세션 명 & 아이디 복사"용. Claude Code `/status`의 Session name과 같은 값.
+#[tauri::command]
+fn session_title(session_id: String, transcript_path: Option<String>) -> Option<String> {
+    let path = transcript_path
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| transcript::find_claude_transcript(&session_id))?;
+    transcript::session_title(&path)
+}
+
 /// 인앱 업데이트 후 재실행. Tauri의 `relaunch()`를 쓰지 않는 이유가 있다.
 ///
 /// `tauri::process::restart()`는 새 프로세스를 그냥 `spawn()`하고 부모가 바로 종료한다.
@@ -1214,6 +1224,7 @@ pub fn run() {
             focus_codex_session,
             is_process_alive,
             transcript_status,
+            session_title,
             restart_app,
         ])
         // Intercept window close so the app survives any code path that

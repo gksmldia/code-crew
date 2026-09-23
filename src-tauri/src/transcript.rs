@@ -142,6 +142,38 @@ fn user_text(v: &Value) -> Option<String> {
     None
 }
 
+/// Claude Code `/status`의 "Session name". 사용자가 붙인 `custom-title`이
+/// 있으면 그 마지막 값, 없으면 자동 생성된 `ai-title`의 마지막 값.
+pub fn session_title(path: &Path) -> Option<String> {
+    let body = std::fs::read_to_string(path).ok()?;
+    let mut custom = None;
+    let mut ai = None;
+    for line in body.lines() {
+        // 전체 줄을 파싱하지 않도록 제목 엔트리만 먼저 거른다.
+        if !line.contains("-title\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        match v.get("type").and_then(Value::as_str) {
+            Some("custom-title") => custom = v.get("customTitle").and_then(Value::as_str).map(str::to_string),
+            Some("ai-title") => ai = v.get("aiTitle").and_then(Value::as_str).map(str::to_string),
+            _ => {}
+        }
+    }
+    custom.or(ai).filter(|t| !t.trim().is_empty())
+}
+
+/// transcript 경로를 아직 모르는 세션용 — `~/.claude/projects/*/{session_id}.jsonl`.
+pub fn find_claude_transcript(session_id: &str) -> Option<std::path::PathBuf> {
+    let root = dirs::home_dir()?.join(".claude").join("projects");
+    let file = format!("{session_id}.jsonl");
+    std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join(&file))
+        .find(|p| p.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +315,35 @@ mod tests {
         })]);
         assert!(!status(&path).interrupted);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn session_title_prefers_last_custom_title_over_ai_title() {
+        let path = temp_transcript(&[
+            json!({"type": "ai-title", "aiTitle": "첫 제목", "sessionId": "s"}),
+            json!({"type": "user", "message": {"role": "user", "content": "hi"}}),
+            json!({"type": "custom-title", "customTitle": "내 제목", "sessionId": "s"}),
+            json!({"type": "ai-title", "aiTitle": "나중 제목", "sessionId": "s"}),
+        ]);
+        assert_eq!(session_title(&path).as_deref(), Some("내 제목"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn session_title_falls_back_to_last_ai_title() {
+        let path = temp_transcript(&[
+            json!({"type": "ai-title", "aiTitle": "첫 제목", "sessionId": "s"}),
+            json!({"type": "ai-title", "aiTitle": "Gut-621 pristinevalleygc site code", "sessionId": "s"}),
+        ]);
+        assert_eq!(session_title(&path).as_deref(), Some("Gut-621 pristinevalleygc site code"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn session_title_none_without_title_entries() {
+        let path = temp_transcript(&[json!({"type": "user", "message": {"role": "user", "content": "hi"}})]);
+        assert_eq!(session_title(&path), None);
+        let _ = fs::remove_file(path);
+        assert_eq!(session_title(Path::new("/nonexistent/code-crew-nope.jsonl")), None);
     }
 }
