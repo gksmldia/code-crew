@@ -20,6 +20,7 @@ interface Store {
   addRestoredMessages: (sessionId: string, msgs: Message[]) => void;
   setProjectKey: (sessionId: string, key: string) => void;
   setDisplayName: (sessionId: string, name: string) => void;
+  setCustomName: (sessionId: string, name: string) => void;
   removeSession: (sessionId: string) => void;
   reorderSessions: (fromId: string, toId: string) => void;
   setBreed: (sessionId: string, breed: string) => void;
@@ -630,6 +631,17 @@ export const useStore = create<Store>((set) => ({
       if (!sess) return state;
       return {
         sessions: { ...state.sessions, [sessionId]: { ...sess, displayName: name } },
+      };
+    }),
+
+  // 빈 문자열이면 사용자 이름을 지우고 자동 이름으로 되돌린다.
+  setCustomName: (sessionId, name) =>
+    set((state) => {
+      const sess = state.sessions[sessionId];
+      if (!sess) return state;
+      const trimmed = name.trim();
+      return {
+        sessions: { ...state.sessions, [sessionId]: { ...sess, customName: trimmed || undefined } },
       };
     }),
 

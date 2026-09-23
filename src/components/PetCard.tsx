@@ -72,6 +72,10 @@ export function PetCard({ session }: PetCardProps) {
   const reorderSessions = useStore((s) => s.reorderSessions);
   const removeSession = useStore((s) => s.removeSession);
   const setBreed = useStore((s) => s.setBreed);
+  const setCustomName = useStore((s) => s.setCustomName);
+  const [editingName, setEditingName] = useState(false);
+  // Esc 직후 언마운트 blur가 저장으로 뒤집지 않게 막는다.
+  const cancelNameRef = useRef(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerAnchor, setPickerAnchor] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [dragging, setDragging] = useState(false);
@@ -146,10 +150,17 @@ export function PetCard({ session }: PetCardProps) {
     if (session.agentType === "codex") focusCodexSession();
   };
 
+  const shownName = session.customName || session.displayName || "(?)";
+  const commitName = (value: string) => {
+    if (cancelNameRef.current) return;
+    setCustomName(session.sessionId, value);
+    setEditingName(false);
+  };
+
   return (
     <div
       data-card
-      draggable
+      draggable={!editingName}
       onDoubleClick={onDoubleClickCard}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
@@ -168,7 +179,31 @@ export function PetCard({ session }: PetCardProps) {
     >
       <div className="flex items-center justify-between text-xs opacity-80 border-b border-dashed border-black/10 dark:border-white/10 pb-1.5 mb-1">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="font-mono font-semibold truncate">{session.displayName || "(?)"}</span>
+          {editingName ? (
+            <input
+              autoFocus
+              defaultValue={shownName}
+              onFocus={(e) => e.currentTarget.select()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitName(e.currentTarget.value);
+                else if (e.key === "Escape") { cancelNameRef.current = true; setEditingName(false); }
+              }}
+              onBlur={(e) => commitName(e.currentTarget.value)}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              placeholder={session.displayName}
+              className="font-mono font-semibold min-w-0 w-full bg-white/60 rounded px-1 outline-none ring-1 ring-black/20"
+            />
+          ) : (
+            // 카드 더블클릭은 터미널 포커스라서, 이름 더블클릭은 여기서 막고 편집으로 전환한다.
+            <span
+              onDoubleClick={(e) => { e.stopPropagation(); cancelNameRef.current = false; setEditingName(true); }}
+              title="더블클릭해서 이름 변경 (비우면 자동 이름)"
+              className="font-mono font-semibold truncate cursor-text"
+            >
+              {shownName}
+            </span>
+          )}
           {agentBadge(session.agentType)}
         </div>
         <span className="flex items-center gap-1">

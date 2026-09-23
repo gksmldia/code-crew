@@ -60,6 +60,9 @@ export interface Session {
   gitBranch?: string;
   projectKey: string;
   displayName: string;
+  /** 사용자가 카드에서 직접 바꾼 이름. 있으면 displayName 대신 표시한다.
+   *  메모리에만 두므로 세션이 끝나거나 앱을 재시작하면 자동 이름으로 돌아간다. */
+  customName?: string;
   state: SessionState;
   currentTool?: string;
   messages: Message[];

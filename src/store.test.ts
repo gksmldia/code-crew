@@ -1487,3 +1487,28 @@ describe("background shell tracking", () => {
     expect(useStore.getState().sessions.s1).toBe(before);
   });
 });
+
+describe("custom card name", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("keeps the user name when the auto name is corrected later, and reverts on empty", () => {
+    const { applyEvent, setCustomName, setDisplayName } = useStore.getState();
+    applyEvent({ kind: "SessionStart", session_id: "s1", cwd: "/work/code-crew/src-tauri", agent_type: "claude" });
+    expect(useStore.getState().sessions.s1.displayName).toBe("src-tauri");
+
+    setCustomName("s1", "  내 카드  ");
+    // App.tsx의 git 루트 보정이 뒤늦게 와도 사용자 이름은 유지된다.
+    setDisplayName("s1", "code-crew");
+    applyEvent({ kind: "UserPromptSubmit", session_id: "s1", cwd: "/work/code-crew" });
+    let sess = useStore.getState().sessions.s1;
+    expect(sess.customName).toBe("내 카드");
+    expect(sess.displayName).toBe("code-crew");
+
+    setCustomName("s1", "   ");
+    sess = useStore.getState().sessions.s1;
+    expect(sess.customName).toBeUndefined();
+    expect(sess.displayName).toBe("code-crew");
+  });
+});
