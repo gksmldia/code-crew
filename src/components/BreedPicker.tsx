@@ -76,9 +76,10 @@ export function BreedPicker({ open, currentBreed, onSelect, onClose, anchor }: B
                   onSelect(b.id);
                   onClose();
                 }}
+                // 전역 button 스타일(다크 모드 흰 글자·어두운 배경, 파란 hover 테두리, 그림자)을 덮어쓴다
                 className={
-                  "w-full px-2 py-1 flex items-center gap-2 text-left hover:bg-black/5 " +
-                  (selected ? "bg-amber-200/60 font-medium text-black" : "")
+                  "w-full px-2 py-1 flex items-center gap-2 text-left text-gray-900 hover:bg-black/5 active:bg-black/10 rounded-none border-0 shadow-none " +
+                  (selected ? "bg-amber-200/60 font-medium text-black" : "bg-transparent")
                 }
               >
                 <img

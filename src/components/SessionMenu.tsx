@@ -45,7 +45,9 @@ export function SessionMenu({ open, anchor, hasTitle, onRename, onCopy, onClose 
 
   if (!open) return null;
 
-  const item = "w-full px-2 py-1.5 text-left hover:bg-black/5";
+  // 전역 button 스타일(다크 모드 흰 글자·어두운 배경, 파란 hover 테두리, 그림자)을 덮어쓴다
+  const item =
+    "w-full px-2 py-1.5 text-left text-gray-900 bg-transparent hover:bg-black/5 active:bg-black/10 rounded-none border-0 shadow-none";
   return (
     <div
       ref={ref}
