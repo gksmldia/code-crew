@@ -82,7 +82,8 @@ export function PetCard({ session }: PetCardProps) {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [session.messages.length]);
+    // 권한 카드는 목록 맨 아래에 붙는다 — 메시지가 안 늘어도 바닥으로 내려야 안 놓친다.
+  }, [session.messages.length, session.pendingPermissions.length]);
 
   const onDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(DRAG_MIME, session.sessionId);
@@ -203,7 +204,7 @@ export function PetCard({ session }: PetCardProps) {
           ))}
         </div>
       ) : hasPending ? (
-        <div className="scrollbar-chunky flex-1 overflow-y-auto flex flex-col items-center gap-1 pr-1">
+        <div ref={scrollRef} className="scrollbar-chunky flex-1 overflow-y-auto flex flex-col items-center gap-1 pr-1">
           <Pet animal={mainPet} state={petState} size="md" />
           {session.pendingPermissions.map((pp) => (
             <PermissionInline key={pp.requestId} session={session} permission={pp} />
