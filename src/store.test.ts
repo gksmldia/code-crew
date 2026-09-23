@@ -1379,8 +1379,28 @@ describe("pending permissions keep the session awake", () => {
     askAndGoSilent(10 * 60 * 1000);
 
     useStore.getState().applyEvent({ kind: "PermissionCancel", request_id: "r1" });
+    // 답한 직후엔 working — 대기열이 비었으니 sweep 강제 idle은 막지 않는다
+    useStore.getState().setIdle("s1", true);
+
+    expect(useStore.getState().sessions.s1.state).toBe("idle");
+  });
+
+  it("keeps Claude working after the permission is answered in the terminal", () => {
+    askAndGoSilent(10 * 60 * 1000);
+
+    useStore.getState().applyEvent({ kind: "PermissionCancel", request_id: "r1" });
     useStore.getState().setIdle("s1");
 
+    expect(useStore.getState().sessions.s1.state).toBe("working");
+  });
+
+  it("keeps Claude working after the widget acknowledges, until Stop", () => {
+    askAndGoSilent(10 * 60 * 1000);
+
+    useStore.getState().acknowledgePermission("s1", "r1");
+    expect(useStore.getState().sessions.s1.state).toBe("working");
+
+    useStore.getState().applyEvent({ kind: "Stop", session_id: "s1", cwd: "/tmp/proj" });
     expect(useStore.getState().sessions.s1.state).toBe("idle");
   });
 

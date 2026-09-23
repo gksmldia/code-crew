@@ -125,7 +125,8 @@ function isAskUserQuestion(permission: PendingPermission): boolean {
 
 function stateAfterPermissionResolution(session: Session, remainingCount: number): Session["state"] {
   if (remainingCount > 0) return "permission";
-  if (session.agentType === "codex" && session.mainStopped !== true) return "working";
+  // 답한 뒤에도 Stop 전까지는 턴이 진행 중 — 승인된 도구 실행 중엔 이벤트가 없다
+  if (session.mainStopped !== true) return "working";
   return "idle";
 }
 
