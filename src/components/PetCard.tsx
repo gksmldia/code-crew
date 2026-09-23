@@ -192,7 +192,7 @@ export function PetCard({ session }: PetCardProps) {
               onDoubleClick={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
               placeholder={session.displayName}
-              className="font-mono font-semibold min-w-0 w-full bg-white/60 rounded px-1 outline-none ring-1 ring-black/20"
+              className="font-mono font-semibold min-w-0 w-full bg-white/60 text-gray-900 rounded px-1 py-0 text-xs shadow-none outline-none ring-1 ring-black/20"
             />
           ) : (
             // 카드 더블클릭은 터미널 포커스라서, 이름 더블클릭은 여기서 막고 편집으로 전환한다.
