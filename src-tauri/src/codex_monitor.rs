@@ -667,8 +667,11 @@ fn map_codex_line(
                 .and_then(|p| p.get("source"))
                 .and_then(|s| s.get("subagent"))
                 .and_then(|s| s.get("thread_spawn"));
+            // codex review 서브에이전트는 source.subagent가 문자열("review")이고
+            // parent_thread_id가 payload 최상위에 있다
             let parent_thread_id = thread_spawn
                 .and_then(|t| t.get("parent_thread_id"))
+                .or_else(|| payload.and_then(|p| p.get("parent_thread_id")))
                 .and_then(|x| x.as_str())
                 .map(str::to_string);
             if let Some(parent_id) = parent_thread_id {
@@ -691,8 +694,14 @@ fn map_codex_line(
                             .and_then(|x| x.as_str())
                     })
                     .map(str::to_string);
+                let subagent_kind = payload
+                    .and_then(|p| p.get("source"))
+                    .and_then(|s| s.get("subagent"))
+                    .and_then(|s| s.as_str())
+                    .map(str::to_string);
                 let label = nickname
                     .or(role)
+                    .or(subagent_kind)
                     .unwrap_or_else(|| "subagent".into());
                 Some(Event::SubagentStart {
                     session_id: parent_id,
@@ -1118,6 +1127,40 @@ mod tests {
         assert!(matches!(
             &events[2],
             Event::SubagentStop { session_id, .. } if session_id == "parent-id"
+        ));
+    }
+
+    // codex review는 부모 exec 스레드 + review 서브에이전트 rollout을 같이 만든다.
+    // 서브에이전트를 못 알아보면 같은 리뷰가 카드 두 장으로 떴다.
+    #[test]
+    fn review_subagent_routes_to_parent() {
+        let path = Path::new("/x/rollout-review.jsonl");
+        let mut pm = HashMap::new();
+        let meta = json!({
+            "type": "session_meta",
+            "payload": {
+                "id": "child-id",
+                "parent_thread_id": "parent-id",
+                "cwd": "/tmp/proj",
+                "source": {"subagent": "review"},
+                "thread_source": "subagent"
+            }
+        });
+        let turn = json!({"type": "turn_context", "payload": {"cwd": "/tmp/proj"}});
+
+        let events = [meta, turn]
+            .iter()
+            .filter_map(|v| map_codex_line("child-id", path, v, &mut pm, Some(4242)))
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            &events[0],
+            Event::SubagentStart { session_id, subagent_type, .. }
+                if session_id == "parent-id" && subagent_type == "review"
+        ));
+        assert!(matches!(
+            &events[1],
+            Event::SessionStart { session_id, source_pid: None, .. } if session_id == "parent-id"
         ));
     }
 
