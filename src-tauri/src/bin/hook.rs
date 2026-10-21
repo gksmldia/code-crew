@@ -16,6 +16,9 @@ fn server_url() -> String {
 }
 const SAFE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "WebSearch", "TodoWrite"];
 
+// 서브에이전트 권한 요청을 위젯에서 기다리는 시간. 지나면 결정 없이 끝내 메인 터미널로 넘긴다
+const SUBAGENT_WIDGET_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Walk up the parent-process chain starting from `start_pid` (typically the
 /// hook's PPID = the Claude Code node process). Returns up to `max_depth` PIDs
 /// in order from `start_pid` outward. Uses `ps` so we don't pull in libc /
@@ -259,6 +262,14 @@ fn payload_hook_event_name(payload: &str) -> Option<String> {
         .get("hook_event_name")
         .and_then(|v| v.as_str())
         .map(str::to_string)
+}
+
+/// 서브에이전트(팀원 포함)가 보낸 hook 입력에만 `agent_id`가 있다.
+fn payload_has_agent_id(payload: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| v.get("agent_id").and_then(|x| x.as_str()).map(|s| !s.is_empty()))
+        .unwrap_or(false)
 }
 
 /// Decide which run mode to use.
@@ -564,9 +575,23 @@ fn main() -> ExitCode {
             }
             drop(tx);
 
-            let (decision, who) = rx
-                .recv()
-                .unwrap_or_else(|_| (default_permission_deny(), Winner::Widget));
+            // 서브에이전트 요청은 15초만 기다린다. 무응답이면 결정 없이 끝내서
+            // 메인 터미널(원격 포함)에 기본 권한 질문이 뜨게 한다
+            let received = if payload_has_agent_id(&buf) {
+                match rx.recv_timeout(SUBAGENT_WIDGET_WAIT) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+                            let _ = tty.write_all(b"\r\x1b[2K");
+                        }
+                        return ExitCode::SUCCESS;
+                    }
+                    other => other.ok(),
+                }
+            } else {
+                rx.recv().ok()
+            };
+            let (decision, who) =
+                received.unwrap_or_else(|| (default_permission_deny(), Winner::Widget));
 
             if matches!(who, Winner::Widget) {
                 // The TTY thread is still parked on read_line with our prompt
@@ -648,7 +673,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{payload_hook_event_name, resolve_mode};
+    use super::{payload_has_agent_id, payload_hook_event_name, resolve_mode};
 
     fn payload(event: &str) -> String {
         serde_json::json!({
@@ -695,6 +720,24 @@ mod tests {
         // pretool/permission passed explicitly (args preserved) keep working.
         assert_eq!(resolve_mode("pretool", &payload("PreToolUse")), "pretool");
         assert_eq!(resolve_mode("permission", &payload("PreToolUse")), "permission");
+    }
+
+    #[test]
+    fn subagent_payload_has_agent_id() {
+        let sub = serde_json::json!({
+            "hook_event_name": "PermissionRequest",
+            "agent_id": "a47888ddfaf33d6a7",
+            "agent_type": "general-purpose",
+        })
+        .to_string();
+        assert!(payload_has_agent_id(&sub));
+    }
+
+    #[test]
+    fn main_payload_has_no_agent_id() {
+        assert!(!payload_has_agent_id(&payload("PermissionRequest")));
+        assert!(!payload_has_agent_id(r#"{"agent_id":""}"#));
+        assert!(!payload_has_agent_id("garbage"));
     }
 
     #[test]
